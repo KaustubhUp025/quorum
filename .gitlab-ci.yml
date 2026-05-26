@@ -1,0 +1,37 @@
+# Quorum — distributed-coordination MR linter
+# Runs automatically on every merge request event.
+# Requires CI/CD variables:
+#   GEMINI_API_KEY     — Gemini API key (or use GOOGLE_CLOUD_PROJECT for Vertex AI)
+#   GITLAB_TOKEN       — GitLab PAT with read_api + write_repository scopes
+
+stages:
+  - review
+
+quorum-review:
+  stage: review
+  image: python:3.12-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    QUORUM_GITLAB_URL: "$CI_SERVER_URL"
+    QUORUM_GITLAB_MCP_PATH: "/api/v4/mcp"
+    QUORUM_GEMINI_MODEL: "gemini-2.5-pro"
+    QUORUM_MIN_CONFIDENCE: "60"
+    QUORUM_BLOCK_ON_CRITICAL: "true"
+    QUORUM_LOG_LEVEL: "INFO"
+  cache:
+    paths:
+      - .cache/pip
+  before_script:
+    - pip install --quiet quorum
+  script:
+    - quorum review
+      --project-id "$CI_PROJECT_PATH"
+      --mr-iid "$CI_MERGE_REQUEST_IID"
+  allow_failure: false
+  artifacts:
+    when: always
+    reports:
+      dotenv: quorum.env
+    expire_in: 7 days

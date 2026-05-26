@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quorum"
+version = "0.1.0"
+description = "Distributed-coordination MR linter powered by Gemini 2.5 Pro and GitLab MCP"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+keywords = ["distributed-systems", "code-review", "gemini", "gitlab", "mcp", "linter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "google-genai==2.6.0",
+    "google-cloud-aiplatform==1.153.1",
+    "mcp==1.27.1",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.1",
+    "click==8.4.1",
+    "structlog==25.5.0",
+    "python-dotenv==1.2.2",
+    "httpx==0.28.1",
+    "tenacity==9.1.4",
+    "rich==15.0.0",
+    "fastapi==0.136.3",
+    "uvicorn[standard]==0.48.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.3",
+    "pytest-asyncio==1.4.0",
+    "pytest-mock==3.15.1",
+    "ruff==0.15.14",
+    "mypy==2.1.0",
+    "types-click",
+]
+deploy = [
+    "google-cloud-run",
+]
+
+[project.scripts]
+quorum = "quorum.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/quorum"
+Repository = "https://github.com/yourusername/quorum"
+Issues = "https://github.com/yourusername/quorum/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quorum"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src/quorum"]
+branch = true
