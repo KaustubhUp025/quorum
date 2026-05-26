@@ -30,6 +30,9 @@ htmlcov/
 *.swo
 .DS_Store
 
+# Local reference docs
+docs/CODEBASE.md
+
 # Secrets — never commit these
 *.pem
 *.key
