@@ -12,7 +12,6 @@ from rich.table import Table
 
 from quorum import __version__
 from quorum.config import get_settings
-from quorum.gitlab_client import GitLabMCPClient
 
 console = Console()
 
@@ -24,7 +23,6 @@ def _configure_logging(level: str) -> None:
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
-            structlog.stdlib.add_logger_name,
             structlog.dev.ConsoleRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
@@ -44,11 +42,16 @@ def main() -> None:
 @click.option("--mr-iid", "-m", required=False, type=int, help="Merge request IID")
 @click.option("--no-comment", is_flag=True, default=False, help="Analyse but don't post an MR comment")
 @click.option("--dry-run", is_flag=True, default=False, help="Print the comment instead of posting it")
+@click.option(
+    "--rest-only", is_flag=True, default=False,
+    help="Use GitLab REST API instead of MCP (works on free plan; no semantic search)",
+)
 def review_cmd(
     project_id: str | None,
     mr_iid: int | None,
     no_comment: bool,
     dry_run: bool,
+    rest_only: bool,
 ) -> None:
     """Review a merge request for distributed coordination anti-patterns."""
     settings = get_settings()
@@ -73,6 +76,7 @@ def review_cmd(
             settings=settings,
             post_comment=not (no_comment or dry_run),
             dry_run=dry_run,
+            rest_only=rest_only,
         )
     )
 
@@ -83,12 +87,21 @@ async def _async_review(
     settings,
     post_comment: bool,
     dry_run: bool,
+    rest_only: bool = False,
 ) -> None:
     from quorum.agent import QuorumAgent
     from quorum.formatter import format_comment
+    from quorum.gitlab_client import GitLabMCPClient, GitLabRESTClient
 
     agent = QuorumAgent(settings)
-    gitlab = GitLabMCPClient(settings.gitlab_mcp_url, settings.gitlab_token)
+
+    if rest_only:
+        gitlab: GitLabMCPClient | GitLabRESTClient = GitLabRESTClient(
+            settings.gitlab_url, settings.gitlab_token
+        )
+        console.print("[yellow]ℹ  REST mode — using GitLab REST API (MCP disabled)[/yellow]")
+    else:
+        gitlab = GitLabMCPClient(settings.gitlab_mcp_url, settings.gitlab_token)
 
     async with gitlab.connect():
         result = await agent.review(
