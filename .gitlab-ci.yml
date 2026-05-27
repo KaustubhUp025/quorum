@@ -1,8 +1,8 @@
 # Quorum — distributed-coordination MR linter
 # Runs automatically on every merge request event.
-# Requires CI/CD variables:
-#   GEMINI_API_KEY     — Gemini API key (or use GOOGLE_CLOUD_PROJECT for Vertex AI)
-#   GITLAB_TOKEN       — GitLab PAT with read_api + write_repository scopes
+# Requires CI/CD variables (set in GitLab → Settings → CI/CD → Variables):
+#   QUORUM_GEMINI_API_KEY     — Gemini API key (or use QUORUM_GOOGLE_CLOUD_PROJECT for Vertex AI)
+#   QUORUM_GITLAB_TOKEN       — GitLab PAT with api scope
 
 stages:
   - review

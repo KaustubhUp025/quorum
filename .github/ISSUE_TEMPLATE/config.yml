@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Discussion
+    url: https://github.com/KaustubhUp025/quorum/discussions
+    about: Ask questions and discuss Quorum here — not in Issues.
+  - name: Security vulnerability
+    url: https://github.com/KaustubhUp025/quorum/security/advisories/new
+    about: Report security issues privately via GitHub Security Advisories.

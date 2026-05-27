@@ -1,0 +1,101 @@
+name: New rule suggestion
+description: Propose a new distributed-coordination anti-pattern rule (Rule 9+)
+labels: ["rule-proposal", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding a rule to Quorum is a single-file contribution — see [CONTRIBUTING.md](docs/CONTRIBUTING.md).
+        This form helps you think through whether the rule is a good fit before writing code.
+
+  - type: input
+    id: name
+    attributes:
+      label: Proposed rule name
+      placeholder: "Distributed Transaction Without Timeout"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How bad is it if this pattern ships to production?
+      options:
+        - "CRITICAL — data loss or corruption possible"
+        - "HIGH — reliability/correctness issue under load"
+        - "MEDIUM — poor practice, rarely causes outages"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What does the rule catch?
+      description: Describe the anti-pattern. Be concrete — what code construct is wrong?
+      placeholder: |
+        A two-phase commit (2PC) coordinator that calls `beginTransaction()` but never
+        sets a timeout on the `prepare` phase. If a participant hangs, the coordinator
+        blocks indefinitely holding locks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it wrong?
+      description: Explain the failure mode. Link to a postmortem, paper, or blog post if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: bad_example
+    attributes:
+      label: Bad code example (the pattern to flag)
+      render: python
+      placeholder: |
+        coordinator.begin_transaction()
+        for participant in participants:
+            participant.prepare()  # no timeout — hangs forever if participant is slow
+    validations:
+      required: true
+
+  - type: textarea
+    id: good_example
+    attributes:
+      label: Good code example (the correct pattern)
+      render: python
+      placeholder: |
+        coordinator.begin_transaction(timeout_ms=5000)
+        for participant in participants:
+            participant.prepare(timeout_ms=2000)
+    validations:
+      required: true
+
+  - type: textarea
+    id: keywords
+    attributes:
+      label: Surface-detector keywords
+      description: What keywords/strings appear in the bad pattern? These are used for the fast pre-filter.
+      placeholder: |
+        begin_transaction, beginTransaction, prepare(), TWO_PHASE
+    validations:
+      required: true
+
+  - type: input
+    id: reference
+    attributes:
+      label: Reference (paper, blog post, postmortem)
+      placeholder: "https://martin.kleppmann.com/..."
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: The pattern cannot be caught reliably by a regex linter alone (needs semantic understanding)
+          required: true
+        - label: I have checked that no existing rule (RULE_01–08) already covers this
+          required: true
+        - label: The keyword list is specific enough that it won't trigger on most CRUD diffs
+          required: true

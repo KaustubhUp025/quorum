@@ -1,5 +1,11 @@
 # Quorum
 
+[![CI](https://github.com/KaustubhUp025/quorum/actions/workflows/ci.yml/badge.svg)](https://github.com/KaustubhUp025/quorum/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/quorum.svg)](https://pypi.org/project/quorum/)
+[![Python](https://img.shields.io/pypi/pyversions/quorum.svg)](https://pypi.org/project/quorum/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![codecov](https://codecov.io/gh/KaustubhUp025/quorum/branch/main/graph/badge.svg)](https://codecov.io/gh/KaustubhUp025/quorum)
+
 **Distributed-coordination MR linter powered by Gemini 2.5 Pro and GitLab MCP.**
 
 Quorum reviews your merge requests for coordination anti-patterns that static linters and generic AI reviewers miss — missing fencing tokens, incomplete saga compensations, retries without jitter, and more. It posts structured findings directly as GitLab MR comments and can block the pipeline on critical issues.

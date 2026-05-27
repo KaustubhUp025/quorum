@@ -1,0 +1,83 @@
+name: Bug report
+description: Something isn't working correctly
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill in as much detail as you can.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "When I run `quorum review`, it..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands you ran, MR content that triggered the issue, etc.
+      placeholder: |
+        1. Create an MR with `redis_client.set("key", "locked", nx=True)`
+        2. Run `quorum review --project-id org/repo --mr-iid 42`
+        3. See error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does the bug occur in?
+      options:
+        - Surface detector (regex pre-filter, before any API calls)
+        - Gemini agent loop (tool-calling phase)
+        - Comment formatter / posting
+        - CLI / configuration
+        - Webhook server
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Run with `QUORUM_LOG_LEVEL=DEBUG` and paste relevant lines. **Redact any tokens or API keys.**
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Quorum version
+      placeholder: "0.1.0  (run `quorum --version`)"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.0  (run `python --version`)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I have redacted all credentials and tokens from my report
+          required: true

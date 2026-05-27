@@ -40,6 +40,7 @@ dev = [
     "pytest==9.0.3",
     "pytest-asyncio==1.4.0",
     "pytest-mock==3.15.1",
+    "pytest-cov==6.1.0",
     "ruff==0.15.14",
     "mypy==2.1.0",
     "types-click",
@@ -52,9 +53,9 @@ deploy = [
 quorum = "quorum.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/quorum"
-Repository = "https://github.com/yourusername/quorum"
-Issues = "https://github.com/yourusername/quorum/issues"
+Homepage = "https://github.com/KaustubhUp025/quorum"
+Repository = "https://github.com/KaustubhUp025/quorum"
+Issues = "https://github.com/KaustubhUp025/quorum/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/quorum"]
@@ -62,7 +63,7 @@ packages = ["src/quorum"]
 [tool.ruff]
 src = ["src"]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM"]

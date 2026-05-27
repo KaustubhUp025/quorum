@@ -1,6 +1,13 @@
-"""Runtime configuration loaded from environment variables."""
+"""Runtime configuration loaded from environment variables.
 
-from pydantic import Field, field_validator
+All settings are read from the environment with the ``QUORUM_`` prefix
+(e.g. ``QUORUM_GITLAB_TOKEN``) or from a ``.env`` file in the working directory.
+
+GitLab CI auto-injected variables (``CI_PROJECT_ID`` etc.) are matched by their
+exact names via ``validation_alias`` — the prefix is NOT applied to those.
+"""
+
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_prefix="QUORUM_",
         case_sensitive=False,
         extra="ignore",
     )
@@ -24,10 +32,20 @@ class Settings(BaseSettings):
     gitlab_token: str = Field(description="GitLab personal-access or CI job token")
     gitlab_mcp_path: str = Field(default="/api/v4/mcp", description="MCP endpoint path")
 
-    # GitLab CI auto-populated vars (set by the runner)
-    ci_project_id: str | None = Field(default=None, alias="CI_PROJECT_ID")
-    ci_merge_request_iid: str | None = Field(default=None, alias="CI_MERGE_REQUEST_IID")
-    ci_project_path: str | None = Field(default=None, alias="CI_PROJECT_PATH")
+    # GitLab CI auto-populated vars (set by the runner).
+    # validation_alias bypasses the QUORUM_ prefix so the runner's native vars work.
+    ci_project_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CI_PROJECT_ID", "QUORUM_CI_PROJECT_ID"),
+    )
+    ci_merge_request_iid: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CI_MERGE_REQUEST_IID", "QUORUM_CI_MERGE_REQUEST_IID"),
+    )
+    ci_project_path: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CI_PROJECT_PATH", "QUORUM_CI_PROJECT_PATH"),
+    )
 
     # --- Agent behaviour ---
     min_confidence: int = Field(
