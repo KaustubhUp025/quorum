@@ -191,16 +191,22 @@ class QuorumAgent:
             # Collect any function calls from this turn
             function_calls = [
                 p.function_call
-                for p in candidate.content.parts
+                for p in (candidate.content.parts or [])
                 if p.function_call is not None
             ]
 
             if not function_calls:
                 # Gemini is done calling tools — extract the text response
                 text_parts = [
-                    p.text for p in candidate.content.parts if p.text
+                    p.text for p in (candidate.content.parts or []) if p.text
                 ]
-                return "\n".join(text_parts)
+                if text_parts:
+                    return "\n".join(text_parts)
+                # Empty turn: gemini-2.5-pro emits a silent planning turn before
+                # calling tools. Keep the turn in history and continue the loop.
+                log.debug("empty_thinking_turn", round=round_num,
+                          finish_reason=str(candidate.finish_reason))
+                continue
 
             log.info("tool_round", round=round_num + 1, calls=[fc.name for fc in function_calls])
 
