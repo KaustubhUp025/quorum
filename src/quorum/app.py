@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from quorum import __version__
 from quorum.config import Settings
-from quorum.gitlab_client import GitLabMCPClient
+from quorum.gitlab_client import make_client
 
 log = structlog.get_logger(__name__)
 
@@ -78,12 +78,12 @@ async def _run_review_background(
 
     try:
         agent = QuorumAgent(settings)
-        gitlab = GitLabMCPClient(settings.gitlab_mcp_url, settings.gitlab_token)
+        gitlab = make_client(settings)
         async with gitlab.connect():
             result = await agent.review(
                 project_id=project_id,
                 mr_iid=mr_iid,
-                mcp=gitlab,
+                client=gitlab,
                 post_comment=True,
             )
         log.info(

@@ -14,7 +14,6 @@ from quorum import __version__
 from quorum.config import get_settings
 
 console = Console()
-
 log = structlog.get_logger(__name__)
 
 
@@ -44,7 +43,11 @@ def main() -> None:
 @click.option("--dry-run", is_flag=True, default=False, help="Print the comment instead of posting it")
 @click.option(
     "--rest-only", is_flag=True, default=False,
-    help="Use GitLab REST API instead of MCP (works on free plan; no semantic search)",
+    help="Use GitLab REST API instead of MCP server (no Node.js required; lexical search only)",
+)
+@click.option(
+    "--list-tools", is_flag=True, default=False,
+    help="Connect to the MCP server, print its tool list, and exit (useful for debugging)",
 )
 def review_cmd(
     project_id: str | None,
@@ -52,14 +55,21 @@ def review_cmd(
     no_comment: bool,
     dry_run: bool,
     rest_only: bool,
+    list_tools: bool,
 ) -> None:
     """Review a merge request for distributed coordination anti-patterns."""
     settings = get_settings()
     _configure_logging(settings.log_level)
 
+    if list_tools:
+        asyncio.run(_async_list_tools(settings))
+        return
+
     # Fall back to CI environment variables
     project_id = project_id or settings.ci_project_path or settings.ci_project_id
-    mr_iid_val = mr_iid or (int(settings.ci_merge_request_iid) if settings.ci_merge_request_iid else None)
+    mr_iid_val = mr_iid or (
+        int(settings.ci_merge_request_iid) if settings.ci_merge_request_iid else None
+    )
 
     if not project_id or not mr_iid_val:
         click.echo(
@@ -81,6 +91,21 @@ def review_cmd(
     )
 
 
+async def _async_list_tools(settings) -> None:
+    """Connect to the MCP server and print all available tool names."""
+    from quorum.gitlab_client import GitLabYodaMCPClient
+
+    cmd = [p for p in settings.mcp_server_cmd.split() if p]
+    client = GitLabYodaMCPClient(settings.gitlab_url, settings.gitlab_token, server_cmd=cmd)
+
+    console.print("[bold cyan]Connecting to yoda-digital MCP server...[/bold cyan]")
+    async with client.connect():
+        tools = await client.list_available_tools()
+    console.print(f"\n[bold green]{len(tools)} tools available:[/bold green]")
+    for name in tools:
+        console.print(f"  • {name}")
+
+
 async def _async_review(
     project_id: str,
     mr_iid: int,
@@ -91,23 +116,21 @@ async def _async_review(
 ) -> None:
     from quorum.agent import QuorumAgent
     from quorum.formatter import format_comment
-    from quorum.gitlab_client import GitLabMCPClient, GitLabRESTClient
+    from quorum.gitlab_client import GitLabYodaMCPClient, GitLabRESTClient, make_client
 
     agent = QuorumAgent(settings)
+    gitlab = make_client(settings, rest_only=rest_only)
 
     if rest_only:
-        gitlab: GitLabMCPClient | GitLabRESTClient = GitLabRESTClient(
-            settings.gitlab_url, settings.gitlab_token
-        )
-        console.print("[yellow]ℹ  REST mode — using GitLab REST API (MCP disabled)[/yellow]")
+        console.print("[yellow]ℹ  REST mode — using GitLab REST API (lexical search, no Node.js)[/yellow]")
     else:
-        gitlab = GitLabMCPClient(settings.gitlab_mcp_url, settings.gitlab_token)
+        console.print("[cyan]ℹ  MCP mode — using yoda-digital/mcp-gitlab-server[/cyan]")
 
     async with gitlab.connect():
         result = await agent.review(
             project_id=project_id,
             mr_iid=mr_iid,
-            mcp=gitlab,
+            client=gitlab,
             post_comment=post_comment and not dry_run,
         )
 
@@ -116,7 +139,7 @@ async def _async_review(
         console.print(format_comment(result))
         console.print("[bold cyan]--- END ---[/bold cyan]\n")
 
-    # Print summary table
+    # Summary table
     table = Table(title=f"Quorum Review — MR !{mr_iid}", show_lines=True)
     table.add_column("Rule", style="cyan")
     table.add_column("Severity", style="bold")
@@ -137,8 +160,10 @@ async def _async_review(
         console.print("\n[bold red]⛔  CRITICAL findings found — pipeline blocked.[/bold red]")
         sys.exit(1)
     else:
-        console.print(f"\n[bold green]✅  Review complete. {result.critical_count} critical, "
-                      f"{result.high_count} high.[/bold green]")
+        console.print(
+            f"\n[bold green]✅  Review complete. {result.critical_count} critical, "
+            f"{result.high_count} high.[/bold green]"
+        )
 
 
 @main.command("list-rules")

@@ -23,7 +23,7 @@ import pytest
 from quorum.agent import QuorumAgent, _parse_findings
 from quorum.config import Settings
 from quorum.formatter import format_comment
-from quorum.gitlab_client import GitLabMCPClient
+from quorum.gitlab_client import GitLabYodaMCPClient
 from quorum.models import Finding, ReviewResult, Severity
 
 
@@ -43,6 +43,7 @@ def _make_part(*, text: str | None = None, function_call=None) -> MagicMock:
     part = MagicMock()
     part.text = text
     part.function_call = function_call
+    part.thought = None  # prevent MagicMock auto-attribute from being truthy
     return part
 
 
@@ -88,14 +89,15 @@ def settings() -> Settings:
 
 @pytest.fixture
 def mock_mcp() -> AsyncMock:
-    """A fully mocked GitLabMCPClient."""
-    mcp = AsyncMock(spec=GitLabMCPClient)
+    """A fully mocked GitLab client (satisfies the GitLabClient protocol)."""
+    mcp = AsyncMock(spec=GitLabYodaMCPClient)
     mcp.get_merge_request_diffs.return_value = _BAD_DIFF
     mcp.get_merge_request.return_value = '{"title": "Add order lock", "iid": 42}'
     mcp.semantic_code_search.return_value = (
         "Found OrderRepository.save(order) — no if_version parameter in method signature."
     )
     mcp.create_workitem_note.return_value = '{"id": 1001}'
+    mcp.get_file_contents.return_value = "# file contents not available in test"
     return mcp
 
 
@@ -157,7 +159,7 @@ class TestAgentLoop:
             result = await agent.review(
                 project_id="myorg/myrepo",
                 mr_iid=42,
-                mcp=mock_mcp,
+                client=mock_mcp,
                 post_comment=True,
             )
 
@@ -195,7 +197,7 @@ class TestAgentLoop:
     @pytest.mark.asyncio
     async def test_no_surfaces_skips_gemini(self, settings):
         """A diff with no coordination surfaces should skip all API calls."""
-        mcp = AsyncMock(spec=GitLabMCPClient)
+        mcp = AsyncMock(spec=GitLabYodaMCPClient)
         mcp.get_merge_request_diffs.return_value = (
             "diff --git a/utils.py\n+def add(a, b):\n+    return a + b\n"
         )

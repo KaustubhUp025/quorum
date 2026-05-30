@@ -1,36 +1,40 @@
 """GitLab clients for Quorum.
 
-Two implementations with the same async interface:
+Three implementations with the same async interface:
 
-GitLabMCPClient  — connects to the GitLab MCP server (Premium/Ultimate only).
-                   Uses semantic_code_search for true AI-powered cross-repo search.
+GitLabYodaMCPClient — connects to yoda-digital/mcp-gitlab-server via stdio.
+                      86 tools, PAT auth, works on any GitLab plan.
+                      Requires Node.js + npx on the host.
 
-GitLabRESTClient — uses GitLab's standard REST API (any plan, any token).
-                   semantic_code_search falls back to lexical blob search;
-                   Gemini still reasons over the real results.
+GitLabMCPClient     — connects to the official GitLab MCP server (Premium/Ultimate).
+                      Kept for reference; blocked by OAuth requirement.
 
-The agent (agent.py) uses the shared interface — it doesn't care which client
-is supplied. The CLI picks the right one automatically (MCP if reachable, REST
-otherwise) or the caller can force REST with use_rest=True.
+GitLabRESTClient    — uses GitLab's standard REST API (any plan, any token).
+                      semantic_code_search falls back to lexical blob search.
+
+The agent (agent.py) uses the shared interface — it does not care which client
+is supplied. The CLI picks the right one based on flags.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Protocol
+from typing import Any, AsyncGenerator, Protocol
 from urllib.parse import quote
 
 import httpx
 import structlog
-from mcp import ClientSession
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client, get_default_environment
 from mcp.client.streamable_http import streamablehttp_client
 
 log = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Shared protocol — both clients satisfy this interface
+# Shared protocol — all clients satisfy this interface
 # ---------------------------------------------------------------------------
 
 class GitLabClient(Protocol):
@@ -44,38 +48,155 @@ class GitLabClient(Protocol):
     async def semantic_code_search(self, project_id: str, query: str, max_results: int) -> str: ...
     async def create_workitem_note(self, project_id: str, mr_iid: int, body: str, note_type: str) -> str: ...
     async def manage_pipeline(self, project_id: str, pipeline_id: int, action: str) -> str: ...
+    async def get_file_contents(self, project_id: str, file_path: str, ref: str) -> str: ...
+    async def get_pipeline_job_output(self, project_id: str, job_id: int) -> str: ...
+    async def create_merge_request(
+        self, project_id: str, source_branch: str, target_branch: str,
+        title: str, description: str,
+    ) -> str: ...
 
 
 # ---------------------------------------------------------------------------
-# MCP client (Premium / Ultimate)
+# Yoda MCP client — yoda-digital/mcp-gitlab-server (primary, recommended)
 # ---------------------------------------------------------------------------
 
-class GitLabMCPClient:
-    """Thin async wrapper around the GitLab MCP server."""
+class GitLabYodaMCPClient:
+    """
+    MCP client using yoda-digital/mcp-gitlab-server (86 tools, PAT auth).
 
-    def __init__(self, mcp_url: str, token: str) -> None:
-        self._url = mcp_url
-        self._headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
+    Launched as a child process via stdio transport — requires Node.js + npx.
+    Authentication uses GITLAB_PERSONAL_ACCESS_TOKEN env var passed to the
+    subprocess; no OAuth flow required.
+
+    Tool names are discovered at connect-time. Each logical operation has an
+    ordered alias list; the first match against the live tool set is used.
+    If no match is found the operation falls back to a REST call.
+    """
+
+    # Priority-ordered candidate names for each logical operation.
+    # Ordered candidate names for each logical operation.
+    # Verified against @zereight/mcp-gitlab v2.1.16 (107 tools).
+    _ALIASES: dict[str, list[str]] = {
+        "get_merge_request_diffs": [
+            "get_merge_request_diffs",       # @zereight ✅
+            "list_merge_request_diffs",      # @zereight (alternate)
+            "get_merge_request_diff",
+        ],
+        "get_merge_request": [
+            "get_merge_request",             # @zereight ✅
+            "show_merge_request",
+        ],
+        "semantic_code_search": [
+            # @zereight has no code-search tool; falls back to REST lexical search
+            "search_code",
+            "search_blobs",
+            "semantic_code_search",
+            "search_project_code",
+        ],
+        "create_workitem_note": [
+            "create_merge_request_note",     # @zereight ✅
+            "create_note",                   # @zereight ✅ (generic)
+            "add_note_to_merge_request",
+            "create_workitem_note",
+        ],
+        "manage_pipeline": [
+            "manage_pipeline",
+            "cancel_pipeline",
+            "retry_pipeline",
+        ],
+        "get_file_contents": [
+            "get_file_contents",             # @zereight ✅
+            "get_file",
+            "get_repository_file",
+            "show_file",
+            "read_file",
+        ],
+        "get_pipeline_job_output": [
+            # @zereight has no job-log tool; falls back to REST
+            "get_job_log",
+            "get_job_trace",
+            "get_pipeline_job_output",
+        ],
+        "create_merge_request": [
+            "create_merge_request",          # @zereight ✅
+            "open_merge_request",
+        ],
+    }
+
+    def __init__(
+        self,
+        gitlab_url: str,
+        token: str,
+        server_cmd: list[str] | None = None,
+    ) -> None:
+        self._url = gitlab_url.rstrip("/")
+        self._token = token
+        self._server_cmd = server_cmd or ["npx", "--yes", "@zereight/mcp-gitlab"]
         self._session: ClientSession | None = None
+        self._available_tools: set[str] = set()
+        # Resolved tool name cache: operation → actual tool name (or None)
+        self._tool_cache: dict[str, str | None] = {}
+        # REST fallback for operations with no matching MCP tool
+        self._rest: GitLabRESTClient | None = None
 
     @asynccontextmanager
-    async def connect(self) -> AsyncGenerator["GitLabMCPClient", None]:
-        """Establish the MCP session. Use as `async with client.connect()`."""
-        async with streamablehttp_client(self._url, headers=self._headers) as (read, write, _):
+    async def connect(self) -> AsyncGenerator["GitLabYodaMCPClient", None]:
+        """Launch the MCP server subprocess and initialise the session."""
+        env = {
+            **get_default_environment(),
+            "GITLAB_PERSONAL_ACCESS_TOKEN": self._token,
+            "GITLAB_URL": self._url,
+        }
+        params = StdioServerParameters(
+            command=self._server_cmd[0],
+            args=self._server_cmd[1:],
+            env=env,
+        )
+        async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 self._session = session
-                log.info("mcp_connected", url=self._url)
-                try:
-                    yield self
-                finally:
-                    self._session = None
-                    log.info("mcp_disconnected")
 
-    async def _call(self, tool_name: str, arguments: dict) -> str:
+                # Discover available tools
+                tools_result = await session.list_tools()
+                self._available_tools = {t.name for t in tools_result.tools}
+                self._tool_cache.clear()
+
+                log.info(
+                    "mcp_yoda_connected",
+                    tool_count=len(self._available_tools),
+                    tools=sorted(self._available_tools),
+                )
+
+                # Prepare REST fallback for any gaps
+                self._rest = GitLabRESTClient(self._url, self._token)
+
+                async with self._rest.connect():
+                    try:
+                        yield self
+                    finally:
+                        self._session = None
+                        self._available_tools = set()
+                        self._tool_cache.clear()
+                        self._rest = None
+
+    def _resolve(self, operation: str) -> str | None:
+        """Return the first matching tool name for the operation, or None."""
+        if operation in self._tool_cache:
+            return self._tool_cache[operation]
+        for candidate in self._ALIASES.get(operation, []):
+            if candidate in self._available_tools:
+                self._tool_cache[operation] = candidate
+                return candidate
+        self._tool_cache[operation] = None
+        log.warning(
+            "mcp_tool_unresolved",
+            operation=operation,
+            tried=self._ALIASES.get(operation, []),
+        )
+        return None
+
+    async def _call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         if self._session is None:
             raise RuntimeError("Not connected — use `async with client.connect()`")
         log.debug("mcp_tool_call", tool=tool_name, args=arguments)
@@ -88,14 +209,177 @@ class GitLabMCPClient:
             log.warning("mcp_tool_error", tool=tool_name, error=error_text)
             return f"[MCP ERROR] {error_text}"
 
+        parts: list[str] = []
+        for content in result.content or []:
+            if hasattr(content, "text"):
+                parts.append(content.text)
+            else:
+                parts.append(
+                    json.dumps(
+                        content.model_dump()
+                        if hasattr(content, "model_dump")
+                        else str(content)
+                    )
+                )
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Interface implementation
+    # ------------------------------------------------------------------
+
+    async def get_merge_request_diffs(self, project_id: str, mr_iid: int) -> str:
+        tool = self._resolve("get_merge_request_diffs")
+        if tool:
+            return await self._call(
+                tool, {"project_id": project_id, "merge_request_iid": str(mr_iid)}
+            )
+        assert self._rest is not None
+        return await self._rest.get_merge_request_diffs(project_id, mr_iid)
+
+    async def get_merge_request(self, project_id: str, mr_iid: int) -> str:
+        tool = self._resolve("get_merge_request")
+        if tool:
+            return await self._call(
+                tool, {"project_id": project_id, "merge_request_iid": str(mr_iid)}
+            )
+        assert self._rest is not None
+        return await self._rest.get_merge_request(project_id, mr_iid)
+
+    async def semantic_code_search(
+        self, project_id: str, query: str, max_results: int = 5
+    ) -> str:
+        tool = self._resolve("semantic_code_search")
+        if tool:
+            return await self._call(
+                tool,
+                {"project_id": project_id, "search": query, "per_page": max_results},
+            )
+        # No code-search tool in @zereight/mcp-gitlab — fall back to REST lexical search
+        assert self._rest is not None
+        return await self._rest.semantic_code_search(project_id, query, max_results)
+
+    async def create_workitem_note(
+        self, project_id: str, mr_iid: int, body: str, note_type: str = "MergeRequest"
+    ) -> str:
+        tool = self._resolve("create_workitem_note")
+        if tool:
+            return await self._call(
+                tool,
+                {
+                    "project_id": project_id,
+                    "merge_request_iid": str(mr_iid),
+                    "body": body,
+                },
+            )
+        assert self._rest is not None
+        return await self._rest.create_workitem_note(project_id, mr_iid, body, note_type)
+
+    async def manage_pipeline(
+        self, project_id: str, pipeline_id: int, action: str
+    ) -> str:
+        tool = self._resolve("manage_pipeline")
+        if tool:
+            return await self._call(
+                tool,
+                {"project_id": project_id, "pipeline_id": pipeline_id, "action": action},
+            )
+        assert self._rest is not None
+        return await self._rest.manage_pipeline(project_id, pipeline_id, action)
+
+    async def get_file_contents(
+        self, project_id: str, file_path: str, ref: str = "HEAD"
+    ) -> str:
+        tool = self._resolve("get_file_contents")
+        if tool:
+            return await self._call(
+                tool,
+                {"project_id": project_id, "file_path": file_path, "ref": ref},
+            )
+        assert self._rest is not None
+        return await self._rest.get_file_contents(project_id, file_path, ref)
+
+    async def get_pipeline_job_output(self, project_id: str, job_id: int) -> str:
+        tool = self._resolve("get_pipeline_job_output")
+        if tool:
+            return await self._call(
+                tool, {"project_id": project_id, "job_id": job_id}
+            )
+        assert self._rest is not None
+        return await self._rest.get_pipeline_job_output(project_id, job_id)
+
+    async def create_merge_request(
+        self,
+        project_id: str,
+        source_branch: str,
+        target_branch: str,
+        title: str,
+        description: str = "",
+    ) -> str:
+        tool = self._resolve("create_merge_request")
+        if tool:
+            return await self._call(
+                tool,
+                {
+                    "project_id": project_id,
+                    "source_branch": source_branch,
+                    "target_branch": target_branch,
+                    "title": title,
+                    "description": description,
+                },
+            )
+        assert self._rest is not None
+        return await self._rest.create_merge_request(
+            project_id, source_branch, target_branch, title, description
+        )
+
+    async def list_available_tools(self) -> list[str]:
+        return sorted(self._available_tools)
+
+
+# ---------------------------------------------------------------------------
+# Official MCP client (Premium / Ultimate — kept for reference)
+# ---------------------------------------------------------------------------
+
+class GitLabMCPClient:
+    """Thin async wrapper around the official GitLab MCP server.
+
+    Requires GitLab Premium/Ultimate and OAuth authentication.
+    Use GitLabYodaMCPClient instead for PAT-based access.
+    """
+
+    def __init__(self, mcp_url: str, token: str) -> None:
+        self._url = mcp_url
+        self._headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        self._session: ClientSession | None = None
+
+    @asynccontextmanager
+    async def connect(self) -> AsyncGenerator["GitLabMCPClient", None]:
+        async with streamablehttp_client(self._url, headers=self._headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                self._session = session
+                log.info("mcp_official_connected", url=self._url)
+                try:
+                    yield self
+                finally:
+                    self._session = None
+
+    async def _call(self, tool_name: str, arguments: dict) -> str:
+        if self._session is None:
+            raise RuntimeError("Not connected — use `async with client.connect()`")
+        result = await self._session.call_tool(tool_name, arguments=arguments)
+        if result.isError:
+            error_text = " ".join(getattr(c, "text", str(c)) for c in (result.content or []))
+            return f"[MCP ERROR] {error_text}"
         parts = []
         for content in result.content or []:
             if hasattr(content, "text"):
                 parts.append(content.text)
             else:
-                parts.append(json.dumps(
-                    content.model_dump() if hasattr(content, "model_dump") else str(content)
-                ))
+                parts.append(json.dumps(content.model_dump() if hasattr(content, "model_dump") else str(content)))
         return "\n".join(parts)
 
     async def get_merge_request_diffs(self, project_id: str, mr_iid: int) -> str:
@@ -105,27 +389,22 @@ class GitLabMCPClient:
         return await self._call("get_merge_request", {"project_id": project_id, "iid": mr_iid})
 
     async def semantic_code_search(self, project_id: str, query: str, max_results: int = 5) -> str:
-        return await self._call(
-            "semantic_code_search",
-            {"project_id": project_id, "search_query": query, "per_page": max_results},
-        )
+        return await self._call("search_code", {"project_id": project_id, "search": query, "per_page": max_results})
 
-    async def create_workitem_note(
-        self, project_id: str, mr_iid: int, body: str, note_type: str = "MergeRequest"
-    ) -> str:
-        return await self._call(
-            "create_workitem_note",
-            {"project_id": project_id, "noteable_type": note_type, "noteable_iid": mr_iid, "body": body},
-        )
+    async def create_workitem_note(self, project_id: str, mr_iid: int, body: str, note_type: str = "MergeRequest") -> str:
+        return await self._call("create_merge_request_note", {"project_id": project_id, "merge_request_iid": mr_iid, "body": body})
 
     async def manage_pipeline(self, project_id: str, pipeline_id: int, action: str) -> str:
         return await self._call("manage_pipeline", {"project_id": project_id, "pipeline_id": pipeline_id, "action": action})
 
-    async def list_available_tools(self) -> list[str]:
-        if self._session is None:
-            raise RuntimeError("Not connected")
-        result = await self._session.list_tools()
-        return [t.name for t in result.tools]
+    async def get_file_contents(self, project_id: str, file_path: str, ref: str = "HEAD") -> str:
+        return await self._call("get_file", {"project_id": project_id, "file_path": file_path, "ref": ref})
+
+    async def get_pipeline_job_output(self, project_id: str, job_id: int) -> str:
+        return await self._call("get_job_log", {"project_id": project_id, "job_id": job_id})
+
+    async def create_merge_request(self, project_id: str, source_branch: str, target_branch: str, title: str, description: str = "") -> str:
+        return await self._call("create_merge_request", {"project_id": project_id, "source_branch": source_branch, "target_branch": target_branch, "title": title, "description": description})
 
 
 # ---------------------------------------------------------------------------
@@ -137,12 +416,12 @@ class GitLabRESTClient:
     GitLab client that uses the standard REST API instead of MCP.
 
     Works on any GitLab plan — free, Premium, Ultimate.
-    Uses the same async interface as GitLabMCPClient so the agent is unchanged.
+    Uses the same async interface as the MCP clients so the agent is unchanged.
 
-    Trade-off vs MCP:
-      - semantic_code_search → lexical blob search (fast, real results, not AI-semantic)
-      - manage_pipeline → not supported (no REST equivalent with same semantics)
-      - Everything else is functionally identical.
+    Trade-offs vs MCP:
+      - semantic_code_search → lexical blob search (not AI-semantic)
+      - manage_pipeline → not supported via REST (no identical semantics)
+      - Everything else is functionally equivalent.
     """
 
     def __init__(self, gitlab_url: str, token: str) -> None:
@@ -152,7 +431,6 @@ class GitLabRESTClient:
 
     @asynccontextmanager
     async def connect(self) -> AsyncGenerator["GitLabRESTClient", None]:
-        """Open a shared httpx session for the lifetime of the review."""
         async with httpx.AsyncClient(
             headers={"Private-Token": self._token},
             timeout=30.0,
@@ -171,7 +449,6 @@ class GitLabRESTClient:
 
     @staticmethod
     def _pid(project_id: str) -> str:
-        """URL-encode the project path for REST API URLs."""
         return quote(str(project_id), safe="")
 
     # ------------------------------------------------------------------
@@ -179,14 +456,12 @@ class GitLabRESTClient:
     # ------------------------------------------------------------------
 
     async def get_merge_request_diffs(self, project_id: str, mr_iid: int) -> str:
-        """Return unified diff text for all changed files in the MR."""
         resp = await self._client.get(
             f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}/diffs",
             params={"per_page": 50, "unidiff": "true"},
         )
         resp.raise_for_status()
         diffs = resp.json()
-
         parts: list[str] = []
         for d in diffs:
             old_path = d.get("old_path", "/dev/null")
@@ -199,7 +474,6 @@ class GitLabRESTClient:
         return "\n".join(parts)
 
     async def get_merge_request(self, project_id: str, mr_iid: int) -> str:
-        """Return key MR metadata as a JSON string."""
         resp = await self._client.get(
             f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}"
         )
@@ -216,21 +490,12 @@ class GitLabRESTClient:
         }, indent=2)
 
     # ------------------------------------------------------------------
-    # Code search (lexical blob search — free plan compatible)
+    # Code search (lexical — free plan compatible)
     # ------------------------------------------------------------------
 
     async def semantic_code_search(
         self, project_id: str, query: str, max_results: int = 5
     ) -> str:
-        """
-        Search project blobs using GitLab's built-in code search.
-
-        This is lexical (keyword-based), not semantic/AI-powered like the MCP tool.
-        Gemini receives the same format and reasons over real code from the repo.
-
-        Extracts the most meaningful terms from the natural-language query
-        before calling the GitLab search API.
-        """
         _stop = {"the", "a", "an", "in", "for", "of", "to", "that", "this",
                  "is", "are", "was", "any", "all", "not", "has", "have", "find",
                  "look", "search", "check", "does", "with", "from", "where"}
@@ -242,12 +507,8 @@ class GitLabRESTClient:
             f"{self._base}/projects/{self._pid(project_id)}/search",
             params={"scope": "blobs", "search": search_term, "per_page": max_results},
         )
-
         if resp.status_code == 403:
-            return (
-                f"[Code search not enabled on this project. "
-                f"Query was: {query!r}. No results available.]"
-            )
+            return f"[Code search not enabled. Query: {query!r}. No results.]"
         resp.raise_for_status()
 
         results = resp.json()
@@ -269,7 +530,6 @@ class GitLabRESTClient:
     async def create_workitem_note(
         self, project_id: str, mr_iid: int, body: str, note_type: str = "MergeRequest"
     ) -> str:
-        """Post a comment on the MR via the REST notes API."""
         resp = await self._client.post(
             f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}/notes",
             json={"body": body},
@@ -282,34 +542,101 @@ class GitLabRESTClient:
 
     async def manage_pipeline(self, project_id: str, pipeline_id: int, action: str) -> str:
         log.warning("manage_pipeline_not_supported_in_rest_mode", action=action)
-        return "[REST mode: pipeline gating requires GitLab MCP (Premium/Ultimate)]"
+        return "[REST mode: pipeline gating requires GitLab MCP]"
+
+    # ------------------------------------------------------------------
+    # File contents
+    # ------------------------------------------------------------------
+
+    async def get_file_contents(
+        self, project_id: str, file_path: str, ref: str = "HEAD"
+    ) -> str:
+        encoded_path = quote(file_path, safe="")
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/repository/files/{encoded_path}",
+            params={"ref": ref},
+        )
+        if resp.status_code == 404:
+            return f"[File not found: {file_path} at ref={ref}]"
+        resp.raise_for_status()
+        data = resp.json()
+        import base64
+        content_b64 = data.get("content", "")
+        try:
+            return base64.b64decode(content_b64).decode("utf-8", errors="replace")
+        except Exception:
+            return content_b64
+
+    # ------------------------------------------------------------------
+    # CI job log
+    # ------------------------------------------------------------------
+
+    async def get_pipeline_job_output(self, project_id: str, job_id: int) -> str:
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/jobs/{job_id}/trace"
+        )
+        if resp.status_code == 404:
+            return f"[Job log not found for job_id={job_id}]"
+        resp.raise_for_status()
+        log_text = resp.text
+        # Truncate to last 8k chars to avoid flooding the context
+        if len(log_text) > 8000:
+            log_text = f"[...truncated — last 8000 chars shown...]\n{log_text[-8000:]}"
+        return log_text
+
+    # ------------------------------------------------------------------
+    # Create merge request
+    # ------------------------------------------------------------------
+
+    async def create_merge_request(
+        self,
+        project_id: str,
+        source_branch: str,
+        target_branch: str,
+        title: str,
+        description: str = "",
+    ) -> str:
+        resp = await self._client.post(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests",
+            json={
+                "source_branch": source_branch,
+                "target_branch": target_branch,
+                "title": title,
+                "description": description,
+                "remove_source_branch": False,
+            },
+        )
+        resp.raise_for_status()
+        mr = resp.json()
+        log.info("rest_mr_created", mr_iid=mr.get("iid"), url=mr.get("web_url"))
+        return json.dumps({
+            "iid": mr.get("iid"),
+            "title": mr.get("title"),
+            "web_url": mr.get("web_url"),
+            "state": mr.get("state"),
+        }, indent=2)
 
 
 # ---------------------------------------------------------------------------
-# Factory — auto-detect MCP availability, fall back to REST
+# Factory
 # ---------------------------------------------------------------------------
 
-async def probe_mcp(mcp_url: str, token: str) -> bool:
-    """Return True if the GitLab MCP endpoint responds (not 404/403)."""
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                mcp_url,
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            return resp.status_code not in (403, 404)
-    except Exception:
-        return False
-
-
-def make_client(settings: object) -> "GitLabMCPClient | GitLabRESTClient":
+def make_client(
+    settings: object,
+    rest_only: bool = False,
+) -> "GitLabYodaMCPClient | GitLabRESTClient":
     """
-    Return a GitLabMCPClient if settings say so, otherwise GitLabRESTClient.
+    Return the appropriate GitLab client.
 
-    Call this from CLI; the agent accepts either type.
-    Actual MCP reachability is probed at connect time, not here —
-    keep this synchronous for simplicity.
+    Priority:
+      1. REST-only mode  → GitLabRESTClient
+      2. Default         → GitLabYodaMCPClient (real MCP, PAT auth)
     """
     from quorum.config import Settings
     s: Settings = settings  # type: ignore[assignment]
-    return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
+
+    if rest_only:
+        return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
+
+    cmd = [part for part in s.mcp_server_cmd.split() if part]
+    return GitLabYodaMCPClient(s.gitlab_url, s.gitlab_token, server_cmd=cmd)

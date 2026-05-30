@@ -30,7 +30,13 @@ class Settings(BaseSettings):
     # --- GitLab ---
     gitlab_url: str = Field(default="https://gitlab.com", description="GitLab instance base URL")
     gitlab_token: str = Field(description="GitLab personal-access or CI job token")
-    gitlab_mcp_path: str = Field(default="/api/v4/mcp", description="MCP endpoint path")
+    gitlab_mcp_path: str = Field(default="/api/v4/mcp", description="MCP endpoint path (official server)")
+
+    # yoda-digital MCP server
+    mcp_server_cmd: str = Field(
+        default="npx --yes @zereight/mcp-gitlab",
+        description="Command to launch the yoda-digital MCP server subprocess",
+    )
 
     # GitLab CI auto-populated vars (set by the runner).
     # validation_alias bypasses the QUORUM_ prefix so the runner's native vars work.
