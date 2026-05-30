@@ -77,7 +77,26 @@ class TestSurfaceDetector:
         ids = [r.id for r in triggered]
         assert "RULE_07" in ids
 
+    def test_outbox_missing_triggers_rule_09(self, bad_fixture):
+        diff = bad_fixture("rule_09_no_outbox.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_09" in ids
+
+    def test_lost_update_triggers_rule_10(self, bad_fixture):
+        diff = bad_fixture("rule_10_lost_update.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_10" in ids
+
+    def test_for_update_good_still_triggers_detector(self, good_fixture):
+        # Detector is a pre-filter — good code with SELECT/UPDATE still fires it
+        diff = good_fixture("rule_10_with_for_update.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_10" in ids
+
     def test_registry_fully_loaded(self):
-        assert len(REGISTRY) == 8
-        expected_ids = {f"RULE_{i:02d}" for i in range(1, 9)}
+        assert len(REGISTRY) == 10
+        expected_ids = {f"RULE_{i:02d}" for i in range(1, 11)}
         assert set(REGISTRY.keys()) == expected_ids
