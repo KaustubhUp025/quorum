@@ -1,28 +1,41 @@
 """GitLab clients for Quorum.
 
-Three implementations with the same async interface:
+Four implementations, same async interface — pick based on your setup:
 
-GitLabYodaMCPClient — connects to yoda-digital/mcp-gitlab-server via stdio.
-                      86 tools, PAT auth, works on any GitLab plan.
-                      Requires Node.js + npx on the host.
+GitLabGlabMCPClient  — RECOMMENDED for demos / hackathon submission.
+                       Uses `glab mcp serve` (official GitLab CLI) via stdio.
+                       191 tools including glab_search_semantic (requires
+                       GitLab Duo / Ultimate for AI-semantic results).
+                       PAT auth via GITLAB_TOKEN. Requires glab v1.80+.
 
-GitLabMCPClient     — connects to the official GitLab MCP server (Premium/Ultimate).
-                      Kept for reference; blocked by OAuth requirement.
+GitLabZereightClient — Community fallback (@zereight/mcp-gitlab).
+                       107 tools, PAT auth, works on any plan/tier.
+                       No semantic code search (REST lexical fallback).
+                       Requires Node.js + npx.
 
-GitLabRESTClient    — uses GitLab's standard REST API (any plan, any token).
-                      semantic_code_search falls back to lexical blob search.
+GitLabMCPClient      — Official GitLab Duo HTTP MCP (/api/v4/mcp).
+                       Requires Premium/Ultimate + OAuth token.
+                       Has server-side semantic search_code.
+                       Kept for reference; OAuth integration pending.
 
-The agent (agent.py) uses the shared interface — it does not care which client
-is supplied. The CLI picks the right one based on flags.
+GitLabRESTClient     — Plain GitLab REST API. Any plan, any token.
+                       No external binary needed (pure Python/httpx).
+                       semantic_code_search falls back to lexical blob search.
+
+The agent accepts any client — it calls the shared interface methods.
+The factory (make_client) picks the tier based on flags + availability.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 import structlog
@@ -57,20 +70,219 @@ class GitLabClient(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Yoda MCP client — yoda-digital/mcp-gitlab-server (primary, recommended)
+# Official glab MCP client — glab mcp serve (RECOMMENDED)
+# ---------------------------------------------------------------------------
+
+class GitLabGlabMCPClient:
+    """
+    MCP client using the official GitLab CLI (`glab mcp serve`) via stdio.
+
+    Provides 191 tools including `glab_search_semantic` which performs
+    AI-powered semantic code search when the project has GitLab Duo enabled
+    (requires Ultimate tier or trial).
+
+    Authentication: GITLAB_TOKEN environment variable (PAT with `api` scope).
+    Requires: glab v1.80+ installed on the system PATH.
+
+    How it works:
+    - A temporary git directory is created with the target project as `origin`.
+    - glab reads this remote to know which GitLab instance and project to use.
+    - The temp dir is cleaned up when the context manager exits.
+    """
+
+    def __init__(self, gitlab_url: str, token: str, project_id: str) -> None:
+        self._url = gitlab_url.rstrip("/")
+        self._token = token
+        self._project_id = project_id        # e.g. "quorum-hackathon/quorum-demo"
+        self._session: ClientSession | None = None
+        self._available_tools: set[str] = set()
+        self._tmpdir: str | None = None
+        self._rest: GitLabRESTClient | None = None
+
+    def _make_git_context(self) -> str:
+        """Create a temp dir with a git remote pointing at the target project."""
+        host = urlparse(self._url).hostname or "gitlab.com"
+        remote_url = f"https://{host}/{self._project_id}.git"
+        tmpdir = tempfile.mkdtemp(prefix="quorum-glab-")
+        subprocess.run(["git", "init", tmpdir], capture_output=True, check=False)
+        subprocess.run(
+            ["git", "-C", tmpdir, "remote", "add", "origin", remote_url],
+            capture_output=True, check=False,
+        )
+        return tmpdir
+
+    @asynccontextmanager
+    async def connect(self) -> AsyncGenerator["GitLabGlabMCPClient", None]:
+        """Start `glab mcp serve` as a subprocess and initialise the MCP session."""
+        self._tmpdir = self._make_git_context()
+        env = {
+            **get_default_environment(),
+            "GITLAB_TOKEN": self._token,
+        }
+        params = StdioServerParameters(
+            command="glab",
+            args=["mcp", "serve"],
+            env=env,
+            cwd=self._tmpdir,
+        )
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    tools_result = await session.list_tools()
+                    self._available_tools = {t.name for t in tools_result.tools}
+                    log.info(
+                        "glab_mcp_connected",
+                        tool_count=len(self._available_tools),
+                        project_id=self._project_id,
+                    )
+                    self._rest = GitLabRESTClient(self._url, self._token)
+                    async with self._rest.connect():
+                        try:
+                            yield self
+                        finally:
+                            self._session = None
+                            self._rest = None
+                            self._available_tools = set()
+        finally:
+            if self._tmpdir:
+                shutil.rmtree(self._tmpdir, ignore_errors=True)
+                self._tmpdir = None
+
+    async def _call(self, tool_name: str, args: list | None = None,
+                    flags: dict | None = None, limit: int = 2000) -> str:
+        if self._session is None:
+            raise RuntimeError("Not connected — use `async with client.connect()`")
+        log.debug("glab_tool_call", tool=tool_name, flags=flags)
+        arguments: dict[str, Any] = {"limit": limit}
+        if args is not None:
+            arguments["args"] = args
+        if flags:
+            arguments["flags"] = flags
+        result = await self._session.call_tool(tool_name, arguments=arguments)
+        if result.isError:
+            error_text = " ".join(
+                getattr(c, "text", str(c)) for c in (result.content or [])
+            )
+            log.warning("glab_tool_error", tool=tool_name, error=error_text[:200])
+            return f"[GLAB ERROR] {error_text}"
+        parts: list[str] = []
+        for content in result.content or []:
+            if hasattr(content, "text"):
+                parts.append(content.text)
+            else:
+                parts.append(str(content))
+        return "\n".join(parts)
+
+    # ------------------------------------------------------------------
+    # Interface implementation
+    # ------------------------------------------------------------------
+
+    async def get_merge_request_diffs(self, project_id: str, mr_iid: int) -> str:
+        if "glab_mr_diff" in self._available_tools:
+            # Use a high limit — full diffs can easily exceed 10k chars
+            return await self._call("glab_mr_diff",
+                args=[str(mr_iid)], flags={"color": "never"}, limit=50000)
+        assert self._rest is not None
+        return await self._rest.get_merge_request_diffs(project_id, mr_iid)
+
+    async def get_merge_request(self, project_id: str, mr_iid: int) -> str:
+        if "glab_mr_view" in self._available_tools:
+            return await self._call("glab_mr_view", args=[str(mr_iid)])
+        assert self._rest is not None
+        return await self._rest.get_merge_request(project_id, mr_iid)
+
+    async def semantic_code_search(
+        self, project_id: str, query: str, max_results: int = 5
+    ) -> str:
+        if "glab_search_semantic" in self._available_tools:
+            result = await self._call(
+                "glab_search_semantic",
+                flags={"query": query, "limit": max_results},
+            )
+            if "[GLAB ERROR]" not in result:
+                return result
+            # If semantic search fails (e.g. indexing not ready), fall back
+            log.warning("glab_semantic_search_failed_falling_back", error=result[:200])
+        assert self._rest is not None
+        return await self._rest.semantic_code_search(project_id, query, max_results)
+
+    async def create_workitem_note(
+        self, project_id: str, mr_iid: int, body: str, note_type: str = "MergeRequest"
+    ) -> str:
+        if "glab_mr_note_create" in self._available_tools:
+            result = await self._call("glab_mr_note_create",
+                args=[str(mr_iid)], flags={"message": body})
+            if "[GLAB ERROR]" not in result:
+                log.info("glab_note_posted", url=result.strip())
+                return result
+        assert self._rest is not None
+        return await self._rest.create_workitem_note(project_id, mr_iid, body, note_type)
+
+    async def manage_pipeline(
+        self, project_id: str, pipeline_id: int, action: str
+    ) -> str:
+        assert self._rest is not None
+        return await self._rest.manage_pipeline(project_id, pipeline_id, action)
+
+    async def get_file_contents(
+        self, project_id: str, file_path: str, ref: str = "HEAD"
+    ) -> str:
+        assert self._rest is not None
+        return await self._rest.get_file_contents(project_id, file_path, ref)
+
+    async def get_pipeline_job_output(self, project_id: str, job_id: int) -> str:
+        if "glab_ci_trace" in self._available_tools:
+            result = await self._call("glab_ci_trace", args=[str(job_id)])
+            if "[GLAB ERROR]" not in result:
+                return result
+        assert self._rest is not None
+        return await self._rest.get_pipeline_job_output(project_id, job_id)
+
+    async def create_merge_request(
+        self, project_id: str, source_branch: str, target_branch: str,
+        title: str, description: str = "",
+    ) -> str:
+        if "glab_mr_create" in self._available_tools:
+            result = await self._call(
+                "glab_mr_create",
+                flags={
+                    "source_branch": source_branch,
+                    "target_branch": target_branch,
+                    "title": title,
+                    "description": description,
+                    "yes": True,
+                },
+            )
+            if "[GLAB ERROR]" not in result:
+                return result
+        assert self._rest is not None
+        return await self._rest.create_merge_request(
+            project_id, source_branch, target_branch, title, description
+        )
+
+    async def list_available_tools(self) -> list[str]:
+        return sorted(self._available_tools)
+
+
+# ---------------------------------------------------------------------------
+# Community MCP client — @zereight/mcp-gitlab (fallback, 107 tools)
 # ---------------------------------------------------------------------------
 
 class GitLabYodaMCPClient:
     """
-    MCP client using yoda-digital/mcp-gitlab-server (86 tools, PAT auth).
+    Community MCP client using @zereight/mcp-gitlab (107 tools, PAT auth).
 
+    Fallback for contributors/CI environments where glab is not installed.
     Launched as a child process via stdio transport — requires Node.js + npx.
-    Authentication uses GITLAB_PERSONAL_ACCESS_TOKEN env var passed to the
-    subprocess; no OAuth flow required.
+    Authentication uses GITLAB_PERSONAL_ACCESS_TOKEN env var.
 
-    Tool names are discovered at connect-time. Each logical operation has an
-    ordered alias list; the first match against the live tool set is used.
-    If no match is found the operation falls back to a REST call.
+    Does NOT have semantic code search — falls back to REST lexical search.
+    For full semantic search use GitLabGlabMCPClient (requires glab + Ultimate).
+
+    Tool names are discovered at connect-time and resolved via alias list.
+    Any unresolved operation falls back to the REST client.
     """
 
     # Priority-ordered candidate names for each logical operation.
@@ -618,25 +830,56 @@ class GitLabRESTClient:
 
 
 # ---------------------------------------------------------------------------
-# Factory
+# Factory — three-tier client selection
 # ---------------------------------------------------------------------------
+
+def _glab_available() -> bool:
+    """Return True if `glab` is found on PATH."""
+    import shutil as _shutil
+    return _shutil.which("glab") is not None
+
 
 def make_client(
     settings: object,
     rest_only: bool = False,
-) -> "GitLabYodaMCPClient | GitLabRESTClient":
+    project_id: str | None = None,
+    mcp_mode: str | None = None,
+) -> "GitLabGlabMCPClient | GitLabYodaMCPClient | GitLabRESTClient":
     """
-    Return the appropriate GitLab client.
+    Return the appropriate GitLab client for this environment.
 
-    Priority:
-      1. REST-only mode  → GitLabRESTClient
-      2. Default         → GitLabYodaMCPClient (real MCP, PAT auth)
+    Tier selection (overridable via mcp_mode / QUORUM_MCP_MODE):
+
+      "glab"     → GitLabGlabMCPClient  — official CLI, semantic search,
+                   requires glab v1.80+ and Ultimate for AI search
+      "zereight" → GitLabYodaMCPClient  — community npm fallback,
+                   107 tools, no semantic search, requires Node.js
+      "rest"     → GitLabRESTClient     — pure Python, lexical search,
+                   no external dependencies
+
+    Auto-detection when mcp_mode is None:
+      glab installed → "glab"  (best)
+      else           → "rest"  (safest, no Node.js required)
     """
     from quorum.config import Settings
     s: Settings = settings  # type: ignore[assignment]
 
+    # Explicit override: --rest-only CLI flag
     if rest_only:
         return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
 
-    cmd = [part for part in s.mcp_server_cmd.split() if part]
-    return GitLabYodaMCPClient(s.gitlab_url, s.gitlab_token, server_cmd=cmd)
+    # Explicit mode from settings or parameter
+    mode = mcp_mode or getattr(s, "mcp_mode", None) or ("glab" if _glab_available() else "rest")
+
+    if mode == "glab":
+        if not _glab_available():
+            log.warning("glab_not_found_falling_back_to_rest")
+            return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
+        pid = project_id or ""
+        return GitLabGlabMCPClient(s.gitlab_url, s.gitlab_token, project_id=pid)
+
+    if mode == "zereight":
+        cmd = [part for part in s.mcp_server_cmd.split() if part]
+        return GitLabYodaMCPClient(s.gitlab_url, s.gitlab_token, server_cmd=cmd)
+
+    return GitLabRESTClient(s.gitlab_url, s.gitlab_token)

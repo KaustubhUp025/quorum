@@ -32,10 +32,20 @@ class Settings(BaseSettings):
     gitlab_token: str = Field(description="GitLab personal-access or CI job token")
     gitlab_mcp_path: str = Field(default="/api/v4/mcp", description="MCP endpoint path (official server)")
 
-    # yoda-digital MCP server
+    # MCP client selection
+    mcp_mode: str | None = Field(
+        default=None,
+        description=(
+            "MCP client tier: 'glab' (official CLI, recommended), "
+            "'zereight' (community npm), 'rest' (pure Python). "
+            "Auto-detected when unset: 'glab' if glab is on PATH, else 'rest'."
+        ),
+    )
+
+    # Community MCP server command (used when mcp_mode='zereight')
     mcp_server_cmd: str = Field(
         default="npx --yes @zereight/mcp-gitlab",
-        description="Command to launch the yoda-digital MCP server subprocess",
+        description="Command to launch the @zereight/mcp-gitlab MCP server subprocess",
     )
 
     # GitLab CI auto-populated vars (set by the runner).

@@ -101,13 +101,32 @@ conditional check to every write while the lock is held.
 
 ---
 
+## GitLab MCP Client Tiers
+
+Quorum supports three GitLab client tiers — pick the one that fits your setup:
+
+| Tier | Command | Tools | Semantic search | Requirements |
+|---|---|---|---|---|
+| **glab** (recommended) | `glab mcp serve` | 191 | ✅ `glab_search_semantic` (needs GitLab Duo/Ultimate) | `glab` v1.80+ on PATH |
+| **zereight** (community) | `@zereight/mcp-gitlab` | 107 | ❌ (REST lexical fallback) | Node.js + npx |
+| **rest** (fallback) | GitLab REST API | — | ❌ (lexical) | Nothing extra |
+
+Auto-detection: if `glab` is on PATH → uses `glab`; otherwise → `rest`.
+
+Override with `QUORUM_MCP_MODE=glab|zereight|rest` in your `.env`.
+
+**Why the community server?**  
+The `@zereight/mcp-gitlab` package was used as a working fallback while investigating the official server's authentication requirements. It remains the recommended choice for contributors and CI environments that don't have `glab` installed. The official `glab mcp serve` is used for the primary demo because it is the GitLab partner's own tooling and provides semantic code search via GitLab Duo.
+
+---
+
 ## Quickstart
 
 ### Prerequisites
 
 - Python 3.10+
-- A GitLab instance with the MCP server enabled (GitLab 18.7+, Premium/Ultimate)
 - A Gemini API key **or** a Google Cloud project with Vertex AI enabled
+- For best results: `glab` CLI v1.80+ ([install](https://gitlab.com/gitlab-org/cli/-/releases)) and a GitLab Ultimate plan/trial (for semantic search)
 
 ### Install
 

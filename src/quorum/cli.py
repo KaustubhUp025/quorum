@@ -119,12 +119,16 @@ async def _async_review(
     from quorum.gitlab_client import GitLabYodaMCPClient, GitLabRESTClient, make_client
 
     agent = QuorumAgent(settings)
-    gitlab = make_client(settings, rest_only=rest_only)
+    gitlab = make_client(settings, rest_only=rest_only, project_id=project_id)
 
     if rest_only:
-        console.print("[yellow]ℹ  REST mode — using GitLab REST API (lexical search, no Node.js)[/yellow]")
+        console.print("[yellow]ℹ  REST mode — GitLab REST API (lexical search, no binary needed)[/yellow]")
+    elif hasattr(gitlab, "_server_cmd"):
+        console.print("[cyan]ℹ  MCP mode — @zereight/mcp-gitlab (community, 107 tools)[/cyan]")
+    elif hasattr(gitlab, "_tmpdir") or hasattr(gitlab, "_make_git_context"):
+        console.print("[green]ℹ  MCP mode — glab mcp serve (official GitLab CLI, 191 tools)[/green]")
     else:
-        console.print("[cyan]ℹ  MCP mode — using yoda-digital/mcp-gitlab-server[/cyan]")
+        console.print("[yellow]ℹ  REST mode[/yellow]")
 
     async with gitlab.connect():
         result = await agent.review(
