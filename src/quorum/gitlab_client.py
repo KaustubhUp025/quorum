@@ -58,6 +58,7 @@ class GitLabClient(Protocol):
 
     async def get_merge_request_diffs(self, project_id: str, mr_iid: int) -> str: ...
     async def get_merge_request(self, project_id: str, mr_iid: int) -> str: ...
+    async def get_mr_metadata(self, project_id: str, mr_iid: int) -> dict: ...
     async def semantic_code_search(self, project_id: str, query: str, max_results: int) -> str: ...
     async def create_workitem_note(self, project_id: str, mr_iid: int, body: str, note_type: str) -> str: ...
     async def manage_pipeline(self, project_id: str, pipeline_id: int, action: str) -> str: ...
@@ -67,6 +68,12 @@ class GitLabClient(Protocol):
         self, project_id: str, source_branch: str, target_branch: str,
         title: str, description: str,
     ) -> str: ...
+    async def create_branch(self, project_id: str, branch: str, ref: str) -> str: ...
+    async def commit_file(
+        self, project_id: str, branch: str, file_path: str, content: str, message: str
+    ) -> str: ...
+    async def get_mr_pipelines(self, project_id: str, mr_iid: int) -> list[dict]: ...
+    async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +268,28 @@ class GitLabGlabMCPClient:
         return await self._rest.create_merge_request(
             project_id, source_branch, target_branch, title, description
         )
+
+    async def get_mr_metadata(self, project_id: str, mr_iid: int) -> dict:
+        assert self._rest is not None
+        return await self._rest.get_mr_metadata(project_id, mr_iid)
+
+    async def create_branch(self, project_id: str, branch: str, ref: str) -> str:
+        assert self._rest is not None
+        return await self._rest.create_branch(project_id, branch, ref)
+
+    async def commit_file(
+        self, project_id: str, branch: str, file_path: str, content: str, message: str
+    ) -> str:
+        assert self._rest is not None
+        return await self._rest.commit_file(project_id, branch, file_path, content, message)
+
+    async def get_mr_pipelines(self, project_id: str, mr_iid: int) -> list[dict]:
+        assert self._rest is not None
+        return await self._rest.get_mr_pipelines(project_id, mr_iid)
+
+    async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]:
+        assert self._rest is not None
+        return await self._rest.get_pipeline_jobs(project_id, pipeline_id)
 
     async def list_available_tools(self) -> list[str]:
         return sorted(self._available_tools)
@@ -543,6 +572,28 @@ class GitLabYodaMCPClient:
         return await self._rest.create_merge_request(
             project_id, source_branch, target_branch, title, description
         )
+
+    async def get_mr_metadata(self, project_id: str, mr_iid: int) -> dict:
+        assert self._rest is not None
+        return await self._rest.get_mr_metadata(project_id, mr_iid)
+
+    async def create_branch(self, project_id: str, branch: str, ref: str) -> str:
+        assert self._rest is not None
+        return await self._rest.create_branch(project_id, branch, ref)
+
+    async def commit_file(
+        self, project_id: str, branch: str, file_path: str, content: str, message: str
+    ) -> str:
+        assert self._rest is not None
+        return await self._rest.commit_file(project_id, branch, file_path, content, message)
+
+    async def get_mr_pipelines(self, project_id: str, mr_iid: int) -> list[dict]:
+        assert self._rest is not None
+        return await self._rest.get_mr_pipelines(project_id, mr_iid)
+
+    async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]:
+        assert self._rest is not None
+        return await self._rest.get_pipeline_jobs(project_id, pipeline_id)
 
     async def list_available_tools(self) -> list[str]:
         return sorted(self._available_tools)
@@ -827,6 +878,74 @@ class GitLabRESTClient:
             "web_url": mr.get("web_url"),
             "state": mr.get("state"),
         }, indent=2)
+
+    # ------------------------------------------------------------------
+    # MR metadata (structured dict for internal use)
+    # ------------------------------------------------------------------
+
+    async def get_mr_metadata(self, project_id: str, mr_iid: int) -> dict:
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}"
+        )
+        resp.raise_for_status()
+        mr = resp.json()
+        return {
+            "source_branch": mr.get("source_branch", ""),
+            "target_branch": mr.get("target_branch", "main"),
+            "web_url": mr.get("web_url", ""),
+            "title": mr.get("title", ""),
+            "state": mr.get("state", ""),
+        }
+
+    # ------------------------------------------------------------------
+    # Branch and file operations (for fix MR creation)
+    # ------------------------------------------------------------------
+
+    async def create_branch(self, project_id: str, branch: str, ref: str) -> str:
+        resp = await self._client.post(
+            f"{self._base}/projects/{self._pid(project_id)}/repository/branches",
+            json={"branch": branch, "ref": ref},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        log.info("rest_branch_created", branch=data.get("name"))
+        return json.dumps({"name": data.get("name"), "commit": data.get("commit", {}).get("id")})
+
+    async def commit_file(
+        self, project_id: str, branch: str, file_path: str, content: str, message: str
+    ) -> str:
+        resp = await self._client.post(
+            f"{self._base}/projects/{self._pid(project_id)}/repository/commits",
+            json={
+                "branch": branch,
+                "commit_message": message,
+                "actions": [{"action": "update", "file_path": file_path, "content": content}],
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        log.info("rest_file_committed", short_id=data.get("short_id"), file=file_path)
+        return json.dumps({"id": data.get("id"), "short_id": data.get("short_id")})
+
+    # ------------------------------------------------------------------
+    # Pipeline status (for CI failure correlation)
+    # ------------------------------------------------------------------
+
+    async def get_mr_pipelines(self, project_id: str, mr_iid: int) -> list[dict]:
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}/pipelines",
+            params={"per_page": 5},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]:
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/pipelines/{pipeline_id}/jobs",
+            params={"scope[]": "failed", "per_page": 5},
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ---------------------------------------------------------------------------

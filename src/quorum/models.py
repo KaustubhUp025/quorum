@@ -42,6 +42,9 @@ class Finding(BaseModel):
     suggested_fix: str | None = None
     file_path: str | None = None
     line_number: int | None = None
+    # Populated after fix MR creation (when QUORUM_CREATE_FIX_MRS=true)
+    fix_mr_url: str | None = None
+    fix_mr_iid: int | None = None
 
 
 class ReviewResult(BaseModel):
@@ -51,6 +54,8 @@ class ReviewResult(BaseModel):
     surfaces_detected: int = 0
     rules_checked: int = 0
     blocked: bool = False
+    # Populated when QUORUM_CORRELATE_CI=true and a failing pipeline is found
+    ci_correlation: str | None = None
 
     @property
     def critical_count(self) -> int:

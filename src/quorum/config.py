@@ -79,6 +79,30 @@ class Settings(BaseSettings):
         default=10, description="Hard cap on Gemini tool-call rounds per review"
     )
 
+    # --- Fix proposal MRs ---
+    create_fix_mrs: bool = Field(
+        default=False,
+        description=(
+            "When True, Quorum generates corrected code and opens a draft MR for each "
+            "CRITICAL finding. Requires the GitLab token to have write access to the project."
+        ),
+    )
+    fix_mr_max_count: int = Field(
+        default=1,
+        ge=1,
+        le=5,
+        description="Maximum number of fix MRs to open per review (to avoid MR spam).",
+    )
+
+    # --- CI failure correlation ---
+    correlate_ci: bool = Field(
+        default=False,
+        description=(
+            "When True, Quorum checks the MR pipeline for failures and asks Gemini whether "
+            "the CI failure is related to any of the coordination findings."
+        ),
+    )
+
     # --- Deployment ---
     port: int = Field(default=8080, description="HTTP port for the Cloud Run webhook server")
     log_level: str = Field(default="INFO")

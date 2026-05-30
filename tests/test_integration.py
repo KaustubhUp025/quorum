@@ -93,11 +93,25 @@ def mock_mcp() -> AsyncMock:
     mcp = AsyncMock(spec=GitLabYodaMCPClient)
     mcp.get_merge_request_diffs.return_value = _BAD_DIFF
     mcp.get_merge_request.return_value = '{"title": "Add order lock", "iid": 42}'
+    mcp.get_mr_metadata.return_value = {
+        "source_branch": "feat/test-branch",
+        "target_branch": "main",
+        "web_url": "https://gitlab.com/test/repo/-/merge_requests/42",
+        "title": "Add order lock",
+        "state": "opened",
+    }
     mcp.semantic_code_search.return_value = (
         "Found OrderRepository.save(order) — no if_version parameter in method signature."
     )
     mcp.create_workitem_note.return_value = '{"id": 1001}'
     mcp.get_file_contents.return_value = "# file contents not available in test"
+    mcp.create_branch.return_value = '{"name": "quorum-fix/rule-01-1234"}'
+    mcp.commit_file.return_value = '{"id": "abc123", "short_id": "abc123"}'
+    mcp.create_merge_request.return_value = json.dumps({
+        "iid": 99, "title": "Draft: [Quorum] Fix", "web_url": "https://gitlab.com/test/repo/-/merge_requests/99",
+    })
+    mcp.get_mr_pipelines.return_value = []
+    mcp.get_pipeline_jobs.return_value = []
     return mcp
 
 
@@ -201,6 +215,10 @@ class TestAgentLoop:
         mcp.get_merge_request_diffs.return_value = (
             "diff --git a/utils.py\n+def add(a, b):\n+    return a + b\n"
         )
+        mcp.get_mr_metadata.return_value = {
+            "source_branch": "feat/test", "target_branch": "main",
+            "web_url": "", "title": "", "state": "opened",
+        }
         mcp.create_workitem_note.return_value = '{"id": 1}'
 
         agent = QuorumAgent(settings)
@@ -398,3 +416,163 @@ class TestReviewResult:
         result = ReviewResult(mr_iid=1, project_id="p")
         assert result.critical_count == 0
         assert result.blocked is False
+
+
+# ---------------------------------------------------------------------------
+# Test: fix MR creation
+# ---------------------------------------------------------------------------
+
+
+class TestFixMRCreation:
+    @pytest.mark.asyncio
+    async def test_fix_mr_created_for_critical_finding(self, mock_mcp):
+        """When create_fix_mrs=True, a draft MR is created for CRITICAL findings."""
+        settings = Settings(
+            gemini_api_key="test",
+            gitlab_token="test",
+            min_confidence=0,
+            create_fix_mrs=True,
+        )
+        parts = [_make_part(text=_findings_json([_FENCING_FINDING]))]
+        agent = QuorumAgent(settings)
+
+        fix_response = _make_response([_make_part(text="def process(): pass  # fixed")])
+
+        with (
+            patch.object(agent, "_generate", new=AsyncMock(return_value=_make_response(parts))),
+            patch.object(agent._gemini.aio.models, "generate_content",
+                         new=AsyncMock(return_value=fix_response)),
+        ):
+            result = await agent.review("myorg/myrepo", 42, mock_mcp, post_comment=False)
+
+        critical = [f for f in result.findings if f.severity == Severity.CRITICAL]
+        assert len(critical) == 1
+        assert critical[0].fix_mr_url is not None
+        assert critical[0].fix_mr_iid == 99
+        mock_mcp.create_branch.assert_called_once()
+        mock_mcp.commit_file.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fix_mr_skipped_when_disabled(self, settings, mock_mcp):
+        """When create_fix_mrs=False (default), no branch or MR is created."""
+        assert settings.create_fix_mrs is False
+        parts = [_make_part(text=_findings_json([_FENCING_FINDING]))]
+        agent = QuorumAgent(settings)
+
+        with patch.object(agent, "_generate", new=AsyncMock(return_value=_make_response(parts))):
+            result = await agent.review("myorg/myrepo", 42, mock_mcp, post_comment=False)
+
+        mock_mcp.create_branch.assert_not_called()
+        mock_mcp.commit_file.assert_not_called()
+        critical = [f for f in result.findings if f.severity == Severity.CRITICAL]
+        assert all(f.fix_mr_url is None for f in critical)
+
+    @pytest.mark.asyncio
+    async def test_fix_mr_link_appears_in_comment(self, mock_mcp):
+        """The fix MR URL appears in the formatted comment when populated."""
+        from quorum.formatter import format_comment
+
+        finding = Finding(
+            rule_id="RULE_01",
+            rule_name="Fencing Token Missing",
+            severity=Severity.CRITICAL,
+            confidence=92,
+            title="Static lock value",
+            explanation="Lock value is 'locked' — no fencing token.",
+            fix_mr_url="https://gitlab.com/test/repo/-/merge_requests/99",
+            fix_mr_iid=99,
+        )
+        result = ReviewResult(mr_iid=42, project_id="test/repo", findings=[finding])
+        comment = format_comment(result)
+        assert "MR !99" in comment
+        assert "Draft fix" in comment
+
+    @pytest.mark.asyncio
+    async def test_fix_mr_skipped_for_high_finding(self, mock_mcp):
+        """HIGH findings do not get fix MRs — only CRITICAL."""
+        settings = Settings(
+            gemini_api_key="test",
+            gitlab_token="test",
+            min_confidence=0,
+            create_fix_mrs=True,
+        )
+        high_finding = {**_FENCING_FINDING, "severity": "HIGH"}
+        parts = [_make_part(text=_findings_json([high_finding]))]
+        agent = QuorumAgent(settings)
+
+        with patch.object(agent, "_generate", new=AsyncMock(return_value=_make_response(parts))):
+            result = await agent.review("myorg/myrepo", 42, mock_mcp, post_comment=False)
+
+        mock_mcp.create_branch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test: CI failure correlation
+# ---------------------------------------------------------------------------
+
+
+class TestCICorrelation:
+    @pytest.mark.asyncio
+    async def test_ci_correlation_skipped_when_no_pipeline(self, settings, mock_mcp):
+        """No pipeline → ci_correlation is None, no Gemini call for correlation."""
+        settings = Settings(
+            gemini_api_key="test",
+            gitlab_token="test",
+            min_confidence=0,
+            correlate_ci=True,
+        )
+        mock_mcp.get_mr_pipelines.return_value = []  # no pipelines
+        parts = [_make_part(text=_findings_json([_FENCING_FINDING]))]
+        agent = QuorumAgent(settings)
+
+        with patch.object(agent, "_generate", new=AsyncMock(return_value=_make_response(parts))):
+            result = await agent.review("myorg/myrepo", 42, mock_mcp, post_comment=False)
+
+        assert result.ci_correlation is None
+
+    @pytest.mark.asyncio
+    async def test_ci_correlation_populated_when_pipeline_fails(self, mock_mcp):
+        """Failing pipeline → ci_correlation is populated with Gemini's assessment."""
+        settings = Settings(
+            gemini_api_key="test",
+            gitlab_token="test",
+            min_confidence=0,
+            correlate_ci=True,
+        )
+        mock_mcp.get_mr_pipelines.return_value = [{"id": 555, "status": "failed"}]
+        mock_mcp.get_pipeline_jobs.return_value = [{"id": 777, "name": "test-job"}]
+        mock_mcp.get_pipeline_job_output.return_value = "FAILED: redis.exceptions.ConnectionError"
+
+        parts = [_make_part(text=_findings_json([_FENCING_FINDING]))]
+        agent = QuorumAgent(settings)
+
+        correlation_response = _make_response([
+            _make_part(text="The CI failure is related to RULE_01: the Redis connection error "
+                            "likely occurs because the lock key is held by a stale process.")
+        ])
+
+        with (
+            patch.object(agent, "_generate", new=AsyncMock(return_value=_make_response(parts))),
+            patch.object(agent._gemini.aio.models, "generate_content",
+                         new=AsyncMock(return_value=correlation_response)),
+        ):
+            result = await agent.review("myorg/myrepo", 42, mock_mcp, post_comment=False)
+
+        assert result.ci_correlation is not None
+        assert "test-job" in result.ci_correlation
+
+    def test_ci_correlation_in_comment(self):
+        """CI correlation text appears in the formatted comment."""
+        result = ReviewResult(
+            mr_iid=42,
+            project_id="test/repo",
+            findings=[Finding(
+                rule_id="RULE_01", rule_name="Fencing Token",
+                severity=Severity.CRITICAL, confidence=90,
+                title="Static lock", explanation="x",
+            )],
+            ci_correlation="**Pipeline job `test` is failed.** Related to RULE_01.",
+        )
+        comment = format_comment(result)
+        assert "CI Failure Correlation" in comment
+        assert "RULE_01" in comment

@@ -1,7 +1,7 @@
 """Quorum agent — orchestrates Gemini + GitLab MCP to review a merge request.
 
 Agent loop:
-  1. Fetch MR diff via GitLab client.
+  1. Fetch MR diff and metadata via GitLab client.
   2. Run surface detector (fast pre-filter, no API calls).
   3. If no surfaces detected → exit early.
   4. Build the investigation prompt and expose MCP tools as Gemini function declarations.
@@ -10,14 +10,17 @@ Agent loop:
      Gemini 2.5 Pro uses dynamic thinking (thinking_budget=-1) and has access to
      Google Search for grounding citations against real CVEs / incident reports.
   6. Parse findings from the final Gemini response.
-  7. Format and post comment to the MR.
-  8. Return ReviewResult (blocking status for CI exit code).
+  7. (Optional) Generate fix code and open a draft fix MR for each CRITICAL finding.
+  8. (Optional) Correlate findings with a failing CI pipeline.
+  9. Format and post comment to the MR.
+ 10. Return ReviewResult (blocking status for CI exit code).
 """
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import structlog
@@ -358,6 +361,214 @@ class QuorumAgent:
         return findings
 
     # ------------------------------------------------------------------
+    # Fix proposal MR generation
+    # ------------------------------------------------------------------
+
+    async def _generate_fix(self, finding: Finding, file_content: str) -> str | None:
+        """Ask Gemini to produce the corrected version of a file for a CRITICAL finding."""
+        prompt = (
+            f"A coordination bug was found by Quorum ({finding.rule_id} — {finding.title}).\n\n"
+            f"Bug explanation: {finding.explanation}\n\n"
+            f"Suggested fix: {finding.suggested_fix or 'Apply the correct pattern for this rule.'}\n\n"
+            f"Current file:\n{file_content}\n\n"
+            "Output ONLY the complete corrected file content with the fix applied. "
+            "Do NOT include any explanation, markdown code fences, or commentary — "
+            "just the raw corrected source file, ready to commit."
+        )
+        try:
+            response = await self._gemini.aio.models.generate_content(
+                model=self._settings.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    # No thinking needed for pure code generation — saves latency + cost
+                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                ),
+            )
+            text = "\n".join(
+                p.text for p in response.candidates[0].content.parts
+                if p.text and not getattr(p, "thought", False)
+            )
+            # Strip markdown wrappers if Gemini added them anyway
+            text = re.sub(r"^```[^\n]*\n?", "", text.strip())
+            text = re.sub(r"\n?```\s*$", "", text.strip())
+            return text.strip() or None
+        except Exception as exc:
+            log.warning("fix_generation_failed", rule=finding.rule_id, error=str(exc))
+            return None
+
+    def _build_fix_mr_description(self, finding: Finding, fixed_content: str) -> str:
+        """Build the description for the fix draft MR."""
+        snippet = fixed_content[:2000] + ("…" if len(fixed_content) > 2000 else "")
+        desc = (
+            f"## 🤖 Auto-generated fix by [Quorum](https://github.com/KaustubhUp025/quorum)\n\n"
+            f"**Rule:** {finding.rule_id} — {finding.rule_name}\n"
+            f"**Severity:** {finding.severity.value}\n"
+            f"**File:** `{finding.file_path}`\n\n"
+            f"### What was wrong\n{finding.explanation}\n\n"
+            f"### Fix applied\n{finding.suggested_fix or 'See the diff above.'}\n\n"
+            f"### Corrected file preview\n```\n{snippet}\n```\n\n"
+            f"---\n*This MR was opened automatically by Quorum after detecting a CRITICAL "
+            f"coordination bug. Review the diff carefully before merging.*"
+        )
+        if finding.reference:
+            desc += f"\n\n**Reference:** {finding.reference}"
+        return desc
+
+    async def _create_fix_mrs(
+        self,
+        findings: list[Finding],
+        source_branch: str,
+        target_branch: str,
+        client: GitLabClientT,
+        project_id: str,
+    ) -> list[Finding]:
+        """Create draft fix MRs for CRITICAL findings (up to fix_mr_max_count)."""
+        created = 0
+        for finding in findings:
+            if created >= self._settings.fix_mr_max_count:
+                break
+            if finding.severity != Severity.CRITICAL or not finding.file_path:
+                continue
+
+            log.info("fix_mr_starting", rule=finding.rule_id, file=finding.file_path)
+            try:
+                # 1 — get the current file from the source branch
+                file_content = await client.get_file_contents(
+                    project_id, finding.file_path, ref=source_branch
+                )
+                if file_content.startswith("["):
+                    log.warning("fix_mr_file_not_found", file=finding.file_path)
+                    continue
+
+                # 2 — ask Gemini to generate the corrected file
+                fixed_content = await self._generate_fix(finding, file_content)
+                if not fixed_content:
+                    continue
+
+                # 3 — create a branch from the source branch
+                branch_name = (
+                    f"quorum-fix/{finding.rule_id.lower().replace('_', '-')}"
+                    f"-{int(time.time())}"
+                )
+                await client.create_branch(project_id, branch_name, ref=source_branch)
+
+                # 4 — commit the corrected file
+                commit_msg = f"[Quorum] Fix {finding.rule_id}: {finding.title}"
+                await client.commit_file(
+                    project_id, branch_name, finding.file_path, fixed_content, commit_msg
+                )
+
+                # 5 — open a DRAFT MR (prefix title with "Draft:" for GitLab draft status)
+                mr_title = f"Draft: [Quorum] Fix {finding.rule_id}: {finding.title}"
+                mr_desc = self._build_fix_mr_description(finding, fixed_content)
+                mr_result = await client.create_merge_request(
+                    project_id, branch_name, target_branch, mr_title, mr_desc
+                )
+                # Result is JSON (REST) or glab text URL — handle both
+                try:
+                    mr_data = json.loads(mr_result)
+                    finding.fix_mr_url = mr_data.get("web_url")
+                    finding.fix_mr_iid = mr_data.get("iid")
+                except json.JSONDecodeError:
+                    url_match = re.search(
+                        r'https?://\S+/-/merge_requests/(\d+)', mr_result
+                    )
+                    if url_match:
+                        finding.fix_mr_url = url_match.group(0).rstrip(".")
+                        finding.fix_mr_iid = int(url_match.group(1))
+
+                log.info(
+                    "fix_mr_created",
+                    rule=finding.rule_id,
+                    mr_iid=finding.fix_mr_iid,
+                    url=finding.fix_mr_url,
+                )
+                created += 1
+
+            except Exception as exc:
+                log.warning("fix_mr_failed", rule=finding.rule_id, error=str(exc))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # CI failure correlation
+    # ------------------------------------------------------------------
+
+    async def _correlate_with_ci_failure(
+        self,
+        project_id: str,
+        mr_iid: int,
+        findings: list[Finding],
+        client: GitLabClientT,
+    ) -> str | None:
+        """Check for a failing CI pipeline and ask Gemini if it relates to the findings."""
+        try:
+            pipelines = await client.get_mr_pipelines(project_id, mr_iid)
+            if not pipelines:
+                return None
+
+            # Most recent pipeline first
+            latest = pipelines[0]
+            status = latest.get("status", "")
+            if status not in ("failed", "running"):
+                return None
+
+            pipeline_id = latest.get("id")
+            log.info("ci_pipeline_found", pipeline_id=pipeline_id, status=status)
+
+            # Fetch failed job logs
+            jobs = await client.get_pipeline_jobs(project_id, pipeline_id)
+            if not jobs:
+                return None
+
+            first_job = jobs[0]
+            job_id = first_job.get("id")
+            job_name = first_job.get("name", "unknown")
+            log.info("ci_failed_job", job_id=job_id, job_name=job_name)
+
+            log_text = await client.get_pipeline_job_output(project_id, job_id)
+            # Trim to last 3000 chars to avoid flooding the context
+            if len(log_text) > 3000:
+                log_text = f"[...truncated...]\n{log_text[-3000:]}"
+
+            # Build correlation prompt
+            findings_summary = "\n".join(
+                f"- {f.rule_id} ({f.severity.value}): {f.title}"
+                for f in findings
+                if f.severity != Severity.PASS
+            )
+            prompt = (
+                "A merge request with the following coordination bugs was reviewed by Quorum:\n\n"
+                f"{findings_summary}\n\n"
+                f"The CI pipeline (job: {job_name}) is {status} with this log output:\n"
+                f"```\n{log_text}\n```\n\n"
+                "In 2-3 sentences: does the CI failure appear to be caused by or related to any "
+                "of these coordination bugs? If yes, name the specific rule(s). "
+                "If no clear connection, say so briefly."
+            )
+
+            response = await self._gemini.aio.models.generate_content(
+                model=self._settings.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                ),
+            )
+            correlation = "\n".join(
+                p.text for p in response.candidates[0].content.parts
+                if p.text and not getattr(p, "thought", False)
+            ).strip()
+
+            log.info("ci_correlation_done", job=job_name, status=status)
+            return f"**Pipeline job `{job_name}` is {status}.** {correlation}"
+
+        except Exception as exc:
+            log.warning("ci_correlation_failed", error=str(exc))
+            return None
+
+    # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
@@ -370,8 +581,11 @@ class QuorumAgent:
     ) -> ReviewResult:
         log.info("review_started", project_id=project_id, mr_iid=mr_iid)
 
-        # Step 1 — fetch diff
+        # Step 1 — fetch diff and MR metadata in parallel
         diff_raw = await client.get_merge_request_diffs(project_id, mr_iid)
+        mr_meta = await client.get_mr_metadata(project_id, mr_iid)
+        source_branch = mr_meta.get("source_branch", "")
+        target_branch = mr_meta.get("target_branch", "main")
 
         # Step 2 — surface detection
         triggered_rules = detect_surfaces(diff_raw)
@@ -422,9 +636,15 @@ class QuorumAgent:
                 response_preview=final_text[:500],
             )
 
-        # Enrich confirmed findings with real citations via Google Search
+        # Step 5 — enrich confirmed findings with real citations via Google Search
         if findings:
             findings = await self._enrich_with_citations(findings)
+
+        # Step 6 — create draft fix MRs for CRITICAL findings (opt-in)
+        if findings and self._settings.create_fix_mrs and source_branch:
+            findings = await self._create_fix_mrs(
+                findings, source_branch, target_branch, client, project_id
+            )
 
         has_critical = any(f.severity == Severity.CRITICAL for f in findings)
         blocked = self._settings.block_on_critical and has_critical
@@ -438,6 +658,12 @@ class QuorumAgent:
             blocked=blocked,
         )
 
+        # Step 7 — correlate with CI failures (opt-in)
+        if self._settings.correlate_ci and findings:
+            result.ci_correlation = await self._correlate_with_ci_failure(
+                project_id, mr_iid, findings, client
+            )
+
         log.info(
             "review_complete",
             critical=result.critical_count,
@@ -446,7 +672,7 @@ class QuorumAgent:
             blocked=blocked,
         )
 
-        # Step 5 — post comment
+        # Step 8 — post comment
         if post_comment:
             comment_body = format_comment(result)
             await client.create_workitem_note(project_id, mr_iid, comment_body)

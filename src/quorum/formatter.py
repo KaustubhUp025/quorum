@@ -27,6 +27,12 @@ def _finding_block(f: Finding) -> str:
     if f.suggested_fix:
         lines.append(f"**Suggested fix:** {f.suggested_fix}")
 
+    if f.fix_mr_url:
+        lines.append(
+            f"**→ Draft fix:** [MR !{f.fix_mr_iid}]({f.fix_mr_url}) "
+            f"— auto-generated corrected code, ready for review"
+        )
+
     if f.reference:
         lines.append(f"**Reference:** {f.reference}")
 
@@ -83,6 +89,13 @@ def format_comment(result: ReviewResult) -> str:
 
     for finding in sorted_findings:
         lines.append(_finding_block(finding))
+        lines.append("---")
+
+    # CI failure correlation section
+    if result.ci_correlation:
+        lines.append(
+            f"### 🔍 CI Failure Correlation\n\n{result.ci_correlation}"
+        )
         lines.append("---")
 
     lines.append(_footer())
