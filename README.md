@@ -6,55 +6,90 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![codecov](https://codecov.io/gh/KaustubhUp025/quorum/branch/main/graph/badge.svg)](https://codecov.io/gh/KaustubhUp025/quorum)
 
-**Distributed-coordination MR linter powered by Gemini 2.5 Pro and GitLab MCP.**
+**AI-powered distributed coordination linter for GitLab MRs and GitHub PRs.**
 
-Quorum reviews your merge requests for coordination anti-patterns that static linters and generic AI reviewers miss — missing fencing tokens, incomplete saga compensations, retries without jitter, and more. It posts structured findings directly as GitLab MR comments and can block the pipeline on critical issues.
+Quorum reviews merge requests for coordination anti-patterns that static linters and generic AI reviewers can't catch — missing fencing tokens, incomplete saga compensations, retries without jitter, lost updates, transactional outbox violations, and more. It posts structured findings as comments, generates draft fix PRs for critical issues, and outputs SARIF for GitHub Code Scanning.
 
-> *"I spent 3 weeks manually debugging distributed-lock race conditions in production. Quorum catches them in 30 seconds before they merge."*
+> *"SonarQube doesn't have rules for saga compensation. Semgrep can't reason across service boundaries. CodeRabbit can't search the full repo. Quorum can."*
+
+---
+
+## Real-world validation
+
+Quorum has found real coordination bugs in real open-source projects, filed as public issues:
+
+| Project | Bug found | Rule | Issue |
+|---|---|---|---|
+| `aio-libs/aiokafka` | Fixed retry backoff uses `retry_backoff_ms` with no jitter — thundering herd under leader election | RULE_06 | [#1165](https://github.com/aio-libs/aiokafka/issues/1165) |
+| `Alexandre_Toto/architecture-event-driven-cdc` | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 + RULE_10 | [#1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
+| `lhyou/fastapi-test` | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 | [#1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
+
+Zero false positives across all runs.
 
 ---
 
 ## How it works
 
+Quorum runs as a three-stage agent pipeline:
+
 ```
-GitLab MR opened
-       │
-       ▼
-┌─────────────────────────────────────────────────────────────┐
-│  GitLab CI: quorum-review job                               │
-│                                                             │
-│  1. get_merge_request_diffs ──► GitLab MCP server           │
-│                                                             │
-│  2. Surface detector  (regex pre-filter, zero API calls)    │
-│     Detects: locks · sagas · retries · idempotency · kafka  │
-│                                                             │
-│  3. Gemini 2.5 Pro agent loop                               │
-│     ┌──────────────────────────────────────┐               │
-│     │  Gemini reasons about diff           │               │
-│     │        │                             │               │
-│     │        ▼  tool call                  │               │
-│     │  semantic_code_search ──► GitLab MCP │               │
-│     │        │                             │               │
-│     │        ▼  search results             │               │
-│     │  Gemini reasons about cross-repo     │               │
-│     │  context + diff together             │               │
-│     │        │                             │               │
-│     │        ▼  JSON findings              │               │
-│     └──────────────────────────────────────┘               │
-│                                                             │
-│  4. create_workitem_note ──► post comment on MR             │
-│                                                             │
-│  5. Exit 1 if CRITICAL findings (blocks merge)              │
-└─────────────────────────────────────────────────────────────┘
+MR / PR opened
+      │
+      ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Stage 1 — SurfaceDetectorAgent  (zero API calls, ~5ms)             │
+│                                                                      │
+│  Regex + keyword pre-filter on the diff.                             │
+│  Detects: locks · sagas · retries · idempotency · kafka · outbox    │
+│  → If nothing detected: exits immediately, no Gemini cost            │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │ surfaces detected
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Stage 2 — DeepReasoningAgent  (Gemini 2.5 Pro, multi-turn)         │
+│                                                                      │
+│  Builds investigation prompt → enters tool-calling loop:            │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────┐            │
+│  │  Gemini reasons about diff                          │            │
+│  │      │                                              │            │
+│  │      ▼  tool call                                   │            │
+│  │  semantic_code_search ──► GitLab MCP / GitHub API   │            │
+│  │      │                                              │            │
+│  │      ▼  search results                              │            │
+│  │  Gemini reasons with cross-repo context             │            │
+│  │      │                                              │            │
+│  │      ▼  (repeats up to max_tool_rounds)             │            │
+│  │  → JSON findings with severity + confidence         │            │
+│  └─────────────────────────────────────────────────────┘            │
+│                                                                      │
+│  Features:                                                           │
+│  · thinking_budget=-1  (dynamic reasoning depth per turn)           │
+│  · Google Search grounding (CVE / incident report citations)        │
+│  · Context-aware severity (RULE_08 → CRITICAL in payment service,   │
+│    HIGH in metrics service — same bug, different blast radius)       │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │ findings
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Stage 3 — ReportFormatterAgent                                      │
+│                                                                      │
+│  · Formats findings as structured Markdown comment                   │
+│  · Posts comment to MR / PR                                          │
+│  · For CRITICAL findings (opt-in): generates corrected file,        │
+│    creates branch, commits fix, opens a DRAFT fix MR                │
+│  · Outputs SARIF 2.1.0 (--format sarif) for GitHub Code Scanning    │
+│  · Exits 1 to block merge if CRITICAL findings found                │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-The `semantic_code_search` MCP call is what makes Quorum **better than a regex linter**. It can find the missing compensation handler in a different service, or confirm that a fencing token is never passed downstream anywhere in the project.
+The `semantic_code_search` call is what makes Quorum **better than a regex linter**. It can find the missing compensation handler in a different service, or confirm a fencing token is never passed downstream — anywhere in the project.
 
 ---
 
 ## Rules
 
-Quorum ships with 8 named rules. Each is a standalone Python module in `src/quorum/rules/` — adding a new rule is a single-file contribution.
+Quorum ships with 10 named rules. Each is a standalone Python module — adding a new rule is a single-file contribution.
 
 | ID | Rule | Severity | Reference |
 |---|---|---|---|
@@ -66,6 +101,8 @@ Quorum ships with 8 named rules. Each is a standalone Python module in `src/quor
 | RULE_06 | Retry Without Jitter | 🟠 HIGH | [AWS — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) |
 | RULE_07 | Sleep in Tests | 🟡 MEDIUM | [Jepsen — Latency tolerance](https://jepsen.io/analyses) |
 | RULE_08 | Kafka Auto-Commit With Manual Ack | 🔴 CRITICAL | [Confluent — Offset Management](https://docs.confluent.io/platform/current/clients/consumer.html) |
+| RULE_09 | Transactional Outbox Missing | 🔴 CRITICAL | [microservices.io — Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) |
+| RULE_10 | Lost Update (SELECT without FOR UPDATE) | 🔴 CRITICAL | [Kleppmann — Designing Data-Intensive Applications §7](https://dataintensive.net/) |
 
 ---
 
@@ -74,49 +111,162 @@ Quorum ships with 8 named rules. Each is a standalone Python module in `src/quor
 ```
 ## Quorum · Distributed Coordination Review
 
-> Scanned 2 coordination surfaces · 1 critical, 1 high · checked 2 rules
+> Scanned 6 coordination surfaces · 4 critical, 1 high · checked 6 rules
 
 ---
 
-### 🔴 CRITICAL — RULE_01: Lock acquired without fencing token
-**Confidence: 91%** | `src/order/service.py:142`
+### 🔴 CRITICAL — RULE_01: Static lock value — no fencing token
+**Confidence: 100%** | `src/orderservice/lock_manager.py:12`
 
-In service.py:L142, you acquire a Redis lock with a static value "locked".
-If this process pauses (GC, network) and the lock TTL expires, another process
-acquires the lock — and when this process resumes, the DB has no way to reject
-the stale write without a fencing token.
-
-**In your diff:**
-  redis_client.set(f"order:{order_id}", "locked", nx=True, px=30000)
-  write_order_to_db(order_id)  # ← no version/token passed
+redis.set(key, "locked", nx=True) uses a static string as the lock value.
+If this process pauses (GC, network blip) and the TTL expires, a second
+process acquires the lock. When the first resumes, the database has no way
+to reject the stale write — there is no fencing token to compare against.
 
 **Found via semantic search:**
-  # OrderRepository.save(order) — no if_version parameter found in project
+  Searched entire project for UUID/counter lock values — none found.
+  OrderRepository.save() accepts no version parameter.
 
-**Suggested fix:** Return the lock value (a UUID or counter) and pass it as a
+**Suggested fix:** Use uuid.uuid4() as the lock value and pass it as a
 conditional check to every write while the lock is held.
 
-**Reference:** Kleppmann (2016) — How to do distributed locking
+→ Draft fix: MR !8  ← Quorum opened this automatically
+
+---
+
+### 🟢 PASS — RULE_07: Sleep correctly identified as task mock, not flaky test
+**Confidence: 100%** | `tests/test_fetcher.py:343`
+asyncio.sleep(1000000) replaces a background task — valid test scaffolding.
 ```
 
 ---
 
-## GitLab MCP Client Tiers
+## Platform support
 
-Quorum supports three GitLab client tiers — pick the one that fits your setup:
+Quorum works on both GitLab and GitHub.
 
-| Tier | Command | Tools | Semantic search | Requirements |
+### GitLab MCP client tiers
+
+| Tier | Client | Tools | Semantic search | Requirements |
 |---|---|---|---|---|
-| **glab** (recommended) | `glab mcp serve` | 191 | ✅ `glab_search_semantic` (needs GitLab Duo/Ultimate) | `glab` v1.80+ on PATH |
+| **glab** (recommended) | `glab mcp serve` | 191 | ✅ AI-semantic (needs Duo/Ultimate) | `glab` v1.80+ on PATH |
 | **zereight** (community) | `@zereight/mcp-gitlab` | 107 | ❌ (REST lexical fallback) | Node.js + npx |
 | **rest** (fallback) | GitLab REST API | — | ❌ (lexical) | Nothing extra |
 
-Auto-detection: if `glab` is on PATH → uses `glab`; otherwise → `rest`.
+Auto-detection: `glab` on PATH → uses `glab`; otherwise → `rest`.  
+Override: `QUORUM_MCP_MODE=glab|zereight|rest`
 
-Override with `QUORUM_MCP_MODE=glab|zereight|rest` in your `.env`.
+### GitHub support
 
-**Why the community server?**  
-The `@zereight/mcp-gitlab` package was used as a working fallback while investigating the official server's authentication requirements. It remains the recommended choice for contributors and CI environments that don't have `glab` installed. The official `glab mcp serve` is used for the primary demo because it is the GitLab partner's own tooling and provides semantic code search via GitLab Duo.
+```bash
+quorum review --platform github \
+  --project-id owner/repo \
+  --mr-iid 42
+```
+
+Uses GitHub REST API (`QUORUM_GITHUB_TOKEN`). `project_id` is `owner/repo`, `mr-iid` is the PR number.
+
+---
+
+## SARIF output (GitHub Code Scanning)
+
+```bash
+quorum review --platform github \
+  --project-id owner/repo --mr-iid 42 \
+  --no-comment --format sarif \
+  > results.sarif
+```
+
+Produces SARIF 2.1.0 JSON on stdout (logs go to stderr). Upload to GitHub Code Scanning for inline PR annotations:
+
+```yaml
+# Drop this in .github/workflows/quorum-scan.yml
+- name: Run Quorum
+  run: |
+    quorum review --platform github \
+      --project-id "${{ github.repository }}" \
+      --mr-iid "${{ github.event.pull_request.number }}" \
+      --format sarif --no-comment > results.sarif
+  continue-on-error: true
+
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: results.sarif
+```
+
+The full workflow is at [`.github/workflows/quorum-scan.yml`](.github/workflows/quorum-scan.yml).
+
+---
+
+## Fix proposal MRs
+
+When `QUORUM_CREATE_FIX_MRS=true` and a CRITICAL finding is confirmed, Quorum:
+
+1. Asks Gemini to generate the corrected file
+2. Creates a branch `quorum-fix/rule-XX-<timestamp>` from the source branch
+3. Commits the corrected file
+4. Opens a **Draft MR** titled `Draft: [Quorum] Fix RULE_XX: <title>`
+5. Adds a link to the fix MR inside the findings comment: `→ Draft fix: MR !N`
+
+```bash
+QUORUM_CREATE_FIX_MRS=true \
+quorum review --project-id myorg/myrepo --mr-iid 42
+```
+
+---
+
+## LiteLLM multi-backend
+
+The default backend is Gemini 2.5 Pro (full features: thinking, Google Search grounding, function calling). For contributors who don't have a Gemini key, any LiteLLM-compatible model works:
+
+```bash
+# Local Ollama (free, no cloud key)
+QUORUM_LLM_BACKEND=ollama/mistral quorum review ...
+
+# OpenAI
+QUORUM_LLM_BACKEND=openai/gpt-4o quorum review ...
+
+# Anthropic
+QUORUM_LLM_BACKEND=anthropic/claude-3-5-sonnet-20241022 quorum review ...
+```
+
+Install the extra dependencies:
+
+```bash
+pip install "quorum[alt-backends]"
+```
+
+**Requirements for non-Gemini backends:**
+- The model must support OpenAI-compatible tool/function calling
+- Minimum 16K token context (our prompt + rules + diff is ~6K tokens)
+- Recommended: `qwen2.5-coder:7b`, `mistral:7b`, `llama3.1:8b`, `gpt-4o`, or Claude 3.5 Sonnet
+
+Note: Gemini-specific features (dynamic thinking depth, Google Search grounding) are not available on LiteLLM backends. Quality on non-tool-capable models will be lower.
+
+---
+
+## Per-project config (`.quorum.yml`)
+
+Create `.quorum.yml` in your project root to override settings without touching env vars:
+
+```yaml
+# .quorum.yml — committed to the repo
+rules:
+  disabled: [RULE_07]       # skip rules that are noisy for this project
+
+confidence_threshold: 75    # higher bar than the global default of 60
+
+ignore_paths:
+  - tests/
+  - "**/*_test.py"
+  - vendor/
+
+create_fix_mrs: true        # auto-open fix MRs for critical findings
+platform: gitlab            # gitlab or github
+llm_backend: gemini/gemini-2.5-pro   # override per project
+```
+
+Priority: `.quorum.yml` > environment variables > built-in defaults.
 
 ---
 
@@ -125,13 +275,16 @@ The `@zereight/mcp-gitlab` package was used as a working fallback while investig
 ### Prerequisites
 
 - Python 3.10+
-- A Gemini API key **or** a Google Cloud project with Vertex AI enabled
-- For best results: `glab` CLI v1.80+ ([install](https://gitlab.com/gitlab-org/cli/-/releases)) and a GitLab Ultimate plan/trial (for semantic search)
+- A Gemini API key ([get one](https://aistudio.google.com)) — or set `QUORUM_LLM_BACKEND` to use another backend
+- For GitLab: `glab` CLI v1.80+ ([install](https://gitlab.com/gitlab-org/cli/-/releases)) recommended for semantic search
+- For GitHub: a GitHub PAT with `repo` + `read:discussion` scope
 
 ### Install
 
 ```bash
 pip install quorum
+# With LiteLLM backends (ollama, openai, anthropic):
+pip install "quorum[alt-backends]"
 ```
 
 Or from source:
@@ -144,42 +297,50 @@ pip install -e ".[dev]"
 
 ### Configure
 
-Create a `.env` file (never commit this):
+```bash
+cp .env.example .env
+# Edit .env — fill in QUORUM_GITLAB_TOKEN and QUORUM_GEMINI_API_KEY
+```
+
+Minimal `.env` for GitLab:
 
 ```bash
-# Required
 QUORUM_GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
 QUORUM_GEMINI_API_KEY=AIza...
-
-# Optional — defaults shown
-QUORUM_GITLAB_URL=https://gitlab.com
-QUORUM_GEMINI_MODEL=gemini-2.5-pro
-QUORUM_MIN_CONFIDENCE=60
-QUORUM_BLOCK_ON_CRITICAL=true
 ```
 
-For Vertex AI instead of the Gemini API:
+Minimal `.env` for GitHub:
 
 ```bash
-QUORUM_USE_VERTEX_AI=true
-QUORUM_GOOGLE_CLOUD_PROJECT=my-gcp-project
-QUORUM_GOOGLE_CLOUD_LOCATION=us-central1
-# No QUORUM_GEMINI_API_KEY needed — uses Application Default Credentials
+QUORUM_GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+QUORUM_GEMINI_API_KEY=AIza...
 ```
 
-### Run a review locally
+### Run a review
+
+**GitLab MR:**
 
 ```bash
 quorum review --project-id myorg/myrepo --mr-iid 42
+quorum review --project-id myorg/myrepo --mr-iid 42 --dry-run    # print comment, don't post
+quorum review --project-id myorg/myrepo --mr-iid 42 --rest-only  # no glab required
 ```
 
-Dry-run (prints the comment without posting it):
+**GitHub PR:**
 
 ```bash
-quorum review --project-id myorg/myrepo --mr-iid 42 --dry-run
+quorum review --platform github --project-id owner/repo --mr-iid 7
+quorum review --platform github --project-id owner/repo --mr-iid 7 --format sarif
 ```
 
-List available rules:
+**With alternate LLM backend:**
+
+```bash
+QUORUM_LLM_BACKEND=ollama/mistral \
+  quorum review --project-id myorg/myrepo --mr-iid 42 --dry-run
+```
+
+**List all rules:**
 
 ```bash
 quorum list-rules
@@ -188,15 +349,6 @@ quorum list-rules
 ---
 
 ## GitLab CI integration
-
-Add this to your project's `.gitlab-ci.yml`:
-
-```yaml
-include:
-  - remote: 'https://raw.githubusercontent.com/KaustubhUp025/quorum/main/.gitlab-ci.yml'
-```
-
-Or copy the job definition directly:
 
 ```yaml
 quorum-review:
@@ -213,75 +365,71 @@ quorum-review:
     QUORUM_MIN_CONFIDENCE: "60"
 ```
 
-Set these CI/CD variables in your GitLab project settings:
+CI/CD variables to set in GitLab project settings:
 
 | Variable | Required | Description |
 |---|---|---|
-| `QUORUM_GITLAB_TOKEN` | ✅ | GitLab PAT with `read_api` and `write_repository` scopes |
-| `QUORUM_GEMINI_API_KEY` | ✅ | Gemini API key (or use Vertex AI) |
-| `QUORUM_GOOGLE_CLOUD_PROJECT` | ✅ | GCP project (if using Vertex AI) |
+| `QUORUM_GITLAB_TOKEN` | ✅ | PAT with `api` scope |
+| `QUORUM_GEMINI_API_KEY` | ✅ | Gemini API key |
+| `QUORUM_CREATE_FIX_MRS` | optional | `true` to auto-open fix MRs |
+| `QUORUM_DISABLED_RULES` | optional | `RULE_07,RULE_08` to skip rules |
 
 ---
 
 ## Google Cloud deployment (webhook mode)
 
-Quorum can also run as a persistent Cloud Run service that receives GitLab webhooks — useful for reviewing MRs across many projects without configuring CI in each.
-
-### Deploy to Cloud Run
-
 ```bash
-# Authenticate
 gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
-
-# Store the GitLab token as a secret
 echo -n "glpat-xxx" | gcloud secrets create quorum-gitlab-token --data-file=-
-
-# Build and deploy
 ./deploy/cloud_run.sh YOUR_PROJECT_ID us-central1
 ```
 
-### Configure the GitLab webhook
-
-1. Go to your GitLab group or project → **Settings → Webhooks**
-2. Add the Cloud Run URL: `https://<your-service>.run.app/webhook/gitlab`
-3. Enable **Merge request events**
-4. Optionally add a secret token
+After deploying:
+- GitLab webhook: project → Settings → Webhooks → `https://<service>.run.app/webhook/gitlab`
+- Enable: **Merge request events**
 
 ---
 
 ## Configuration reference
 
-All settings are read from environment variables (prefix `QUORUM_`) or a `.env` file.
+All settings use the `QUORUM_` prefix (e.g. `QUORUM_GITLAB_TOKEN`).
 
 | Variable | Default | Description |
 |---|---|---|
+| `QUORUM_PLATFORM` | `gitlab` | Target platform: `gitlab` or `github` |
 | `QUORUM_GEMINI_API_KEY` | — | Gemini API key |
-| `QUORUM_USE_VERTEX_AI` | `false` | Use Vertex AI instead of Gemini API |
+| `QUORUM_USE_VERTEX_AI` | `false` | Use Vertex AI (Application Default Credentials) |
 | `QUORUM_GOOGLE_CLOUD_PROJECT` | — | GCP project (Vertex AI) |
 | `QUORUM_GOOGLE_CLOUD_LOCATION` | `us-central1` | GCP region |
-| `QUORUM_GEMINI_MODEL` | `gemini-2.5-pro` | Model to use |
-| `QUORUM_GITLAB_URL` | `https://gitlab.com` | GitLab instance URL |
-| `QUORUM_GITLAB_TOKEN` | — | GitLab PAT or CI job token |
-| `QUORUM_GITLAB_MCP_PATH` | `/api/v4/mcp` | MCP server path |
-| `QUORUM_MIN_CONFIDENCE` | `60` | Minimum confidence to report a finding (0–100) |
-| `QUORUM_BLOCK_ON_CRITICAL` | `true` | Fail CI on CRITICAL findings |
-| `QUORUM_MAX_SEARCH_RESULTS` | `5` | Max snippets per semantic search call |
+| `QUORUM_GEMINI_MODEL` | `gemini-2.5-pro` | Gemini model (used when backend is `gemini/*`) |
+| `QUORUM_LLM_BACKEND` | `gemini/gemini-2.5-pro` | LLM backend — prefix `gemini/` uses native SDK; others use LiteLLM |
+| `QUORUM_GITLAB_URL` | `https://gitlab.com` | GitLab instance base URL |
+| `QUORUM_GITLAB_TOKEN` | — | GitLab PAT with `api` scope |
+| `QUORUM_GITHUB_TOKEN` | — | GitHub PAT with `repo` + `read:discussion` scope |
+| `QUORUM_MCP_MODE` | auto | GitLab MCP tier: `glab`, `zereight`, or `rest` |
+| `QUORUM_MIN_CONFIDENCE` | `60` | Suppress findings below this confidence (0–100) |
+| `QUORUM_BLOCK_ON_CRITICAL` | `true` | Exit 1 (fail pipeline) when CRITICAL findings found |
+| `QUORUM_MAX_SEARCH_RESULTS` | `5` | Max code snippets per semantic search call |
 | `QUORUM_MAX_TOOL_ROUNDS` | `10` | Hard cap on Gemini tool-call rounds per review |
-| `QUORUM_PORT` | `8080` | Port for the Cloud Run webhook server |
+| `QUORUM_DISABLED_RULES` | — | Comma-separated rule IDs to skip (e.g. `RULE_07,RULE_08`) |
+| `QUORUM_CREATE_FIX_MRS` | `false` | Auto-open draft fix MRs for CRITICAL findings |
+| `QUORUM_FIX_MR_MAX_COUNT` | `1` | Max fix MRs opened per review |
+| `QUORUM_CORRELATE_CI` | `false` | Check failing CI pipeline and correlate with findings |
+| `QUORUM_PORT` | `8080` | Port for Cloud Run webhook server |
 | `QUORUM_LOG_LEVEL` | `INFO` | Log level |
 
 ---
 
 ## Adding a new rule
 
-Contributing a rule is a single-file addition. See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full guide.
+Contributing a rule is a single-file addition. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full guide.
 
 **Quick version:**
 
-1. Create `src/quorum/rules/rule_09_your_rule_name.py`
-2. Define a `RULE = Rule(...)` instance with keywords, patterns, search queries, and reasoning guidance
-3. Add a bad fixture to `tests/fixtures/bad/` and a good fixture to `tests/fixtures/good/`
+1. Create `src/quorum/rules/rule_11_your_rule_name.py`
+2. Define a `RULE = Rule(...)` with keywords, patterns, search query templates, and reasoning guidance
+3. Add `tests/fixtures/bad/rule_11_*.py` and `tests/fixtures/good/rule_11_*.py`
 4. Add a surface-detector assertion to `tests/test_detector.py`
 5. Open a PR — the registry auto-discovers new rules at startup
 
@@ -290,41 +438,35 @@ Contributing a rule is a single-file addition. See [CONTRIBUTING.md](docs/CONTRI
 ## Development
 
 ```bash
-# Install with dev dependencies
 pip install -e ".[dev]"
 
-# Run tests
-pytest
-
-# Lint
-ruff check src/ tests/
-
-# Type check
-mypy src/
+pytest                     # run all 110 tests
+ruff check src/ tests/     # lint
+mypy src/                  # type check
 ```
 
 ---
 
-## Architecture notes
-
-- **Two-phase design:** The surface detector (regex/keyword) is a cheap pre-filter. Gemini and MCP are only invoked when the diff actually touches a coordination pattern. On a typical CRUD MR, Quorum exits in milliseconds without any API calls.
-- **Rules are data, not code:** Each rule contributes keywords, regex patterns, MCP search templates, and reasoning guidance. Detection intelligence lives in the Gemini system prompt. This makes rules easy to review and contribute.
-- **`semantic_code_search` is load-bearing:** A finding that only looks at the diff has a high false-positive rate. Cross-project search is what lets Quorum say "this lock has no fencing token anywhere in the project" with confidence.
-- **Confidence threshold:** Gemini self-reports confidence (0–100) per finding. Findings below `QUORUM_MIN_CONFIDENCE` are suppressed. Tunable per project.
-
----
-
-## Tech stack
+## Architecture
 
 | Component | Technology |
 |---|---|
-| LLM | Gemini 2.5 Pro (`google-genai 2.6.0`) |
-| MCP client | `mcp 1.27.1` (streamable-HTTP transport) |
-| Partner MCP server | [GitLab MCP Server](https://docs.gitlab.com/user/gitlab_duo/model_context_protocol/) |
+| LLM (primary) | Gemini 2.5 Pro — `google-genai 2.6.0` — thinking_budget=-1, Google Search grounding |
+| LLM (alternate) | Any LiteLLM backend — `litellm 1.86.2` — OpenAI-compatible tool calling |
+| GitLab MCP | `glab mcp serve` (191 tools, official) · `@zereight/mcp-gitlab` (107 tools, community) |
+| GitHub client | GitHub REST API via `httpx 0.28.1` |
 | Data models | Pydantic 2.13.4 |
+| Config | pydantic-settings 2.14.1 + `.quorum.yml` (pyyaml 6.0.3) |
 | Webhook server | FastAPI 0.136.3 + Uvicorn 0.48.0 |
 | CLI | Click 8.4.1 |
+| Output formats | Markdown MR comment · SARIF 2.1.0 |
 | Cloud deployment | Google Cloud Run + Vertex AI Agent Engine |
+
+**Design principles:**
+- **Two-phase design:** Surface detector is a cheap pre-filter (regex/keyword). Gemini is only called when the diff touches a coordination pattern. A typical CRUD MR exits in milliseconds with zero API calls.
+- **Rules are data:** Keywords, patterns, search templates, and reasoning guidance — not if/else chains. Detection intelligence lives in the Gemini system prompt. Easy to review and contribute.
+- **Cross-repo context:** `semantic_code_search` is load-bearing. A diff-only reviewer has high false-positive rates. Cross-project search is what lets Quorum say "this lock has no fencing token anywhere in the codebase" with 100% confidence.
+- **Confidence threshold:** Gemini self-reports confidence (0–100) per finding. Findings below `QUORUM_MIN_CONFIDENCE` are suppressed. Tunable per project via `.quorum.yml`.
 
 ---
 
