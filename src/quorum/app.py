@@ -37,6 +37,13 @@ def create_app(settings: Settings) -> FastAPI:
         x_gitlab_token: str | None = Header(default=None, alias="X-Gitlab-Token"),
         x_gitlab_event: str | None = Header(default=None, alias="X-Gitlab-Event"),
     ) -> JSONResponse:
+        # SEC-01: validate webhook secret token when configured
+        if settings.webhook_secret:
+            if not x_gitlab_token or not hmac.compare_digest(
+                x_gitlab_token, settings.webhook_secret
+            ):
+                raise HTTPException(status_code=403, detail="Invalid X-Gitlab-Token")
+
         payload = await request.json()
 
         if x_gitlab_event not in ("Merge Request Hook", "merge_request"):

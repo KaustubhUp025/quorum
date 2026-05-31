@@ -122,7 +122,8 @@ async def _async_list_tools(settings) -> None:
     """Connect to the MCP server and print all available tool names."""
     from quorum.gitlab_client import GitLabYodaMCPClient
 
-    cmd = [p for p in settings.mcp_server_cmd.split() if p]
+    import shlex
+    cmd = shlex.split(settings.mcp_server_cmd)
     client = GitLabYodaMCPClient(settings.gitlab_url, settings.gitlab_token, server_cmd=cmd)
 
     console.print("[bold cyan]Connecting to yoda-digital MCP server...[/bold cyan]")

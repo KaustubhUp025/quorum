@@ -139,11 +139,27 @@ class Settings(BaseSettings):
     # --- Deployment ---
     port: int = Field(default=8080, description="HTTP port for the Cloud Run webhook server")
     log_level: str = Field(default="INFO")
+    webhook_secret: str | None = Field(
+        default=None,
+        description=(
+            "Secret token for validating incoming GitLab webhooks (X-Gitlab-Token header). "
+            "Set this in GitLab's webhook settings and here. "
+            "If unset, the webhook endpoint accepts all requests (insecure)."
+        ),
+    )
 
     @field_validator("gitlab_mcp_path")
     @classmethod
     def normalise_mcp_path(cls, v: str) -> str:
         return v if v.startswith("/") else f"/{v}"
+
+    @field_validator("gitlab_url")
+    @classmethod
+    def validate_gitlab_url(cls, v: str) -> str:
+        v = v.rstrip("/")
+        if not v.startswith(("https://", "http://")):
+            raise ValueError("gitlab_url must start with 'https://' or 'http://'")
+        return v
 
     @property
     def gitlab_mcp_url(self) -> str:

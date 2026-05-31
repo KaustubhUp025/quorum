@@ -37,6 +37,19 @@ from quorum.prompts import SYSTEM_PROMPT, build_review_prompt
 
 log = structlog.get_logger(__name__)
 
+# Patterns that look like secrets — redacted before sending CI logs to external LLM
+_SECRET_PATTERNS = re.compile(
+    r"(ghp_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|AIzaSy[A-Za-z0-9_-]{33}"
+    r"|AKIA[A-Z0-9]{16}|(?:password|token|secret|key)\s*=\s*\S+)",
+    re.IGNORECASE,
+)
+
+
+def _scrub_secrets(text: str) -> str:
+    """Replace recognisable secret patterns with [REDACTED] before sending to the LLM."""
+    return _SECRET_PATTERNS.sub("[REDACTED]", text)
+
+
 # Type alias for any GitLab client implementation
 GitLabClientT = GitLabYodaMCPClient | GitLabRESTClient
 
@@ -676,6 +689,7 @@ class QuorumAgent:
             log.info("ci_failed_job", job_id=job_id, job_name=job_name)
 
             log_text = await client.get_pipeline_job_output(project_id, job_id)
+            log_text = _scrub_secrets(log_text)
             # Trim to last 3000 chars to avoid flooding the context
             if len(log_text) > 3000:
                 log_text = f"[...truncated...]\n{log_text[-3000:]}"

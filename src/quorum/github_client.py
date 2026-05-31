@@ -45,7 +45,6 @@ class GitHubRESTClient:
                 "X-GitHub-Api-Version": "2022-11-28",
             },
             timeout=30.0,
-            follow_redirects=True,
         ) as client:
             self._http = client
             log.info("github_rest_client_ready", base=self._base)

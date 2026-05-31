@@ -697,7 +697,6 @@ class GitLabRESTClient:
         async with httpx.AsyncClient(
             headers={"Private-Token": self._token},
             timeout=30.0,
-            follow_redirects=True,
         ) as client:
             self._http = client
             log.info("rest_client_ready", base=self._base)
@@ -998,7 +997,8 @@ def make_client(
         return GitLabGlabMCPClient(s.gitlab_url, s.gitlab_token, project_id=pid)
 
     if mode == "zereight":
-        cmd = [part for part in s.mcp_server_cmd.split() if part]
+        import shlex
+        cmd = shlex.split(s.mcp_server_cmd)
         return GitLabYodaMCPClient(s.gitlab_url, s.gitlab_token, server_cmd=cmd)
 
     return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
