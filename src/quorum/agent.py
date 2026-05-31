@@ -5,11 +5,11 @@ Agent loop:
   2. Run surface detector (fast pre-filter, no API calls).
   3. If no surfaces detected → exit early.
   4. Build the investigation prompt and expose MCP tools as Gemini function declarations.
-  5. Run the Gemini multi-turn tool-calling loop:
-       Gemini calls → Python executes MCP tool → result sent back → repeat.
-     Gemini 2.5 Pro uses dynamic thinking (thinking_budget=-1) and has access to
-     Google Search for grounding citations against real CVEs / incident reports.
-  6. Parse findings from the final Gemini response.
+  5. Run the LLM tool-calling loop (Gemini native or LiteLLM for alternate backends):
+       LLM calls → Python executes MCP tool → result sent back → repeat.
+     Gemini 2.5 Pro uses dynamic thinking (thinking_budget=-1) and Google Search grounding.
+     LiteLLM backends (ollama, openai, anthropic) use OpenAI-compatible tool calling.
+  6. Parse findings from the final LLM response.
   7. (Optional) Generate fix code and open a draft fix MR for each CRITICAL finding.
   8. (Optional) Correlate findings with a failing CI pipeline.
   9. Format and post comment to the MR.
@@ -305,6 +305,154 @@ class QuorumAgent:
         )
 
     # ------------------------------------------------------------------
+    # LiteLLM agent loop (OpenAI-compatible — any non-Gemini backend)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _openai_tools() -> list[dict]:
+        """Return the investigation tools in OpenAI function-calling JSON format."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "semantic_code_search",
+                    "description": (
+                        "Search the repository for code snippets related to a natural-language query. "
+                        "Use this to find compensation handlers, lock utilities, retry helpers, "
+                        "idempotency checks, and other coordination-related code across the project."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "Natural-language search query. "
+                                    "E.g. 'compensation handler for OrderCreated', "
+                                    "'fencing token uuid lock', 'retry backoff jitter'"
+                                ),
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_merge_request",
+                    "description": (
+                        "Get metadata for the MR/PR being reviewed "
+                        "(title, description, author, source/target branch)."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_file_contents",
+                    "description": (
+                        "Fetch the full current content of a file in the repository. "
+                        "Use when the diff snippet alone is insufficient."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Repository-relative path, e.g. 'src/saga.py'",
+                            },
+                            "ref": {
+                                "type": "string",
+                                "description": "Git ref (branch or SHA). Defaults to HEAD.",
+                            },
+                        },
+                        "required": ["file_path"],
+                    },
+                },
+            },
+        ]
+
+    async def _agent_loop_litellm(
+        self,
+        initial_message: str,
+        client: GitLabClientT,
+        project_id: str,
+        mr_iid: int,
+    ) -> str:
+        """
+        Run the multi-turn tool-calling loop using LiteLLM (OpenAI-compatible API).
+
+        Used when QUORUM_LLM_BACKEND is set to a non-Gemini backend such as
+        'ollama/mistral', 'openai/gpt-4o', or 'anthropic/claude-3-5-sonnet-20241022'.
+        The backend must support OpenAI-compatible function/tool calling.
+        """
+        import litellm  # soft import
+
+        litellm.drop_params = True  # ignore unknown params silently
+
+        messages: list[dict] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": initial_message},
+        ]
+        tools = self._openai_tools()
+        model = self._settings.llm_backend
+
+        for round_num in range(self._settings.max_tool_rounds):
+            response = await litellm.acompletion(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.1,
+            )
+            msg = response.choices[0].message
+            tool_calls = msg.tool_calls or []
+
+            # Append the assistant turn to history
+            messages.append(msg.model_dump(exclude_unset=True))
+
+            if not tool_calls:
+                # Final text response
+                return msg.content or ""
+
+            log.info(
+                "tool_round",
+                round=round_num + 1,
+                calls=[tc.function.name for tc in tool_calls],
+            )
+
+            # Execute each tool call and append results
+            for tc in tool_calls:
+                fn_name = tc.function.name
+                try:
+                    fn_args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    fn_args = {}
+
+                log.info("tool_call", name=fn_name, args=fn_args)
+                result_text = await self._run_tool(
+                    name=fn_name,
+                    args=fn_args,
+                    client=client,
+                    project_id=project_id,
+                    mr_iid=mr_iid,
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result_text,
+                })
+
+        log.warning("max_tool_rounds_reached", rounds=self._settings.max_tool_rounds)
+        messages.append({"role": "user", "content": "Please summarise your findings as JSON now."})
+        response = await litellm.acompletion(
+            model=model, messages=messages, temperature=0.1
+        )
+        return response.choices[0].message.content or ""
+
+    # ------------------------------------------------------------------
     # Citation enrichment (separate Google Search pass)
     # ------------------------------------------------------------------
 
@@ -587,8 +735,14 @@ class QuorumAgent:
         source_branch = mr_meta.get("source_branch", "")
         target_branch = mr_meta.get("target_branch", "main")
 
-        # Step 2 — surface detection
+        # Step 2 — surface detection + disabled-rule filtering
         triggered_rules = detect_surfaces(diff_raw)
+        disabled = {r.upper() for r in (self._settings.disabled_rules or [])}
+        if disabled:
+            before = len(triggered_rules)
+            triggered_rules = [r for r in triggered_rules if r.id not in disabled]
+            if before != len(triggered_rules):
+                log.info("rules_disabled", skipped=before - len(triggered_rules), ids=sorted(disabled))
 
         if not triggered_rules:
             log.info("review_skipped_no_surfaces")
@@ -617,7 +771,14 @@ class QuorumAgent:
             project_id=project_id,
             mr_iid=mr_iid,
         )
-        final_text = await self._agent_loop(prompt, client, project_id, mr_iid)
+
+        # Select backend: native google-genai for Gemini, LiteLLM for everything else
+        use_gemini = self._settings.llm_backend.startswith("gemini/")
+        if use_gemini:
+            final_text = await self._agent_loop(prompt, client, project_id, mr_iid)
+        else:
+            log.info("llm_backend_litellm", model=self._settings.llm_backend)
+            final_text = await self._agent_loop_litellm(prompt, client, project_id, mr_iid)
 
         # Step 4 — parse findings
         findings: list[Finding] = []

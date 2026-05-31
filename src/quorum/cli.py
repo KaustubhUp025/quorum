@@ -75,11 +75,16 @@ def review_cmd(
     settings = get_settings()
     _configure_logging(settings.log_level)
 
+    # Apply .quorum.yml project config on top of env-var settings
+    from quorum.project_config import load_project_config, apply_project_config
+    project_cfg = load_project_config()
+    settings = apply_project_config(settings, project_cfg)
+
     if list_tools:
         asyncio.run(_async_list_tools(settings))
         return
 
-    # Resolve platform (CLI flag overrides QUORUM_PLATFORM)
+    # Resolve platform (CLI flag overrides .quorum.yml, which overrides QUORUM_PLATFORM)
     effective_platform = platform or getattr(settings, "platform", "gitlab") or "gitlab"
 
     # Fall back to CI environment variables (GitLab only)
@@ -149,19 +154,20 @@ async def _async_review(
 
     agent = QuorumAgent(settings)
 
+    llm_label = settings.llm_backend
     if platform == "github":
         client = make_github_client(settings)
-        _out.print("[blue]ℹ  GitHub mode — GitHub REST API[/blue]")
+        _out.print(f"[blue]ℹ  GitHub mode — GitHub REST API · LLM: {llm_label}[/blue]")
     else:
         client = make_client(settings, rest_only=rest_only, project_id=project_id)
         if rest_only:
-            _out.print("[yellow]ℹ  REST mode — GitLab REST API (lexical search, no binary needed)[/yellow]")
+            _out.print(f"[yellow]ℹ  REST mode — GitLab REST API · LLM: {llm_label}[/yellow]")
         elif hasattr(client, "_server_cmd"):
-            _out.print("[cyan]ℹ  MCP mode — @zereight/mcp-gitlab (community, 107 tools)[/cyan]")
+            _out.print(f"[cyan]ℹ  MCP mode — @zereight/mcp-gitlab · LLM: {llm_label}[/cyan]")
         elif hasattr(client, "_make_git_context"):
-            _out.print("[green]ℹ  MCP mode — glab mcp serve (official GitLab CLI, 191 tools)[/green]")
+            _out.print(f"[green]ℹ  MCP mode — glab mcp serve (official, 191 tools) · LLM: {llm_label}[/green]")
         else:
-            _out.print("[yellow]ℹ  REST mode[/yellow]")
+            _out.print(f"[yellow]ℹ  REST mode · LLM: {llm_label}[/yellow]")
 
     async with client.connect():
         result = await agent.review(

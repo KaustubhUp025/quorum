@@ -44,9 +44,17 @@ dev = [
     "ruff==0.15.14",
     "mypy==2.1.0",
     "types-click",
+    "pyyaml==6.0.3",
+    "litellm==1.86.2",
+]
+# Install when using non-Gemini LLM backends (ollama, openai, anthropic, etc.)
+alt-backends = [
+    "litellm==1.86.2",
+    "pyyaml==6.0.3",
 ]
 deploy = [
     "google-cloud-run",
+    "pyyaml==6.0.3",
 ]
 
 [project.scripts]

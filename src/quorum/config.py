@@ -78,6 +78,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CI_PROJECT_PATH", "QUORUM_CI_PROJECT_PATH"),
     )
 
+    # --- LLM backend ---
+    llm_backend: str = Field(
+        default="gemini/gemini-2.5-pro",
+        description=(
+            "LLM backend for analysis. Prefix 'gemini/' uses the native google-genai SDK "
+            "(full features: thinking, grounding). Any other value uses LiteLLM — e.g. "
+            "'ollama/mistral', 'openai/gpt-4o', 'anthropic/claude-3-5-sonnet-20241022'. "
+            "LiteLLM backends require the model to support OpenAI-compatible tool calling."
+        ),
+    )
+
     # --- Agent behaviour ---
     min_confidence: int = Field(
         default=60,
@@ -92,6 +103,13 @@ class Settings(BaseSettings):
     max_search_results: int = Field(default=5, description="Max snippets per semantic search call")
     max_tool_rounds: int = Field(
         default=10, description="Hard cap on Gemini tool-call rounds per review"
+    )
+    disabled_rules: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Rule IDs to skip entirely. "
+            "Set via QUORUM_DISABLED_RULES=RULE_07,RULE_08 or in .quorum.yml under rules.disabled."
+        ),
     )
 
     # --- Fix proposal MRs ---

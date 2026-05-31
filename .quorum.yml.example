@@ -1,0 +1,31 @@
+# .quorum.yml — per-project Quorum configuration
+# Copy to .quorum.yml in your project root to customise behaviour.
+# Values here override environment variables, which override built-in defaults.
+
+# Disable rules that are too noisy for your project
+rules:
+  disabled: []              # e.g. [RULE_07] to skip sleep-in-tests checks
+  # confidence_threshold: 75  # alternative place to set confidence threshold
+
+# Minimum Gemini confidence before a finding is reported (0–100)
+# confidence_threshold: 60
+
+# File paths to exclude from surface detection (glob patterns)
+# ignore_paths:
+#   - tests/
+#   - "**/*_test.py"
+#   - vendor/
+
+# Automatically open a draft MR/PR with corrected code after CRITICAL findings
+# create_fix_mrs: false
+
+# Target platform: 'gitlab' or 'github'
+# platform: gitlab
+
+# LLM backend for analysis
+# Default: gemini/gemini-2.5-pro (recommended — full features including thinking + grounding)
+# Alternatives (require pip install quorum[alt-backends]):
+#   ollama/mistral                              — local, no cloud key needed
+#   openai/gpt-4o                               — requires OPENAI_API_KEY
+#   anthropic/claude-3-5-sonnet-20241022        — requires ANTHROPIC_API_KEY
+# llm_backend: gemini/gemini-2.5-pro
