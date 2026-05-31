@@ -27,9 +27,24 @@ class Settings(BaseSettings):
     use_vertex_ai: bool = Field(default=False, description="Route Gemini calls through Vertex AI")
     gemini_model: str = Field(default="gemini-2.5-pro")
 
+    # --- Platform ---
+    platform: str = Field(
+        default="gitlab",
+        description="Target platform: 'gitlab' or 'github'",
+    )
+
     # --- GitLab ---
     gitlab_url: str = Field(default="https://gitlab.com", description="GitLab instance base URL")
-    gitlab_token: str = Field(description="GitLab personal-access or CI job token")
+    gitlab_token: str = Field(
+        default="",
+        description="GitLab personal-access or CI job token",
+    )
+
+    # --- GitHub ---
+    github_token: str | None = Field(
+        default=None,
+        description="GitHub personal access token (repo + read:discussion scope)",
+    )
     gitlab_mcp_path: str = Field(default="/api/v4/mcp", description="MCP endpoint path (official server)")
 
     # MCP client selection

@@ -37,9 +37,9 @@ def main() -> None:
 
 
 @main.command("review")
-@click.option("--project-id", "-p", required=False, help="GitLab project ID or path (e.g. myorg/myrepo)")
-@click.option("--mr-iid", "-m", required=False, type=int, help="Merge request IID")
-@click.option("--no-comment", is_flag=True, default=False, help="Analyse but don't post an MR comment")
+@click.option("--project-id", "-p", required=False, help="Project path (e.g. myorg/myrepo) or GitHub owner/repo")
+@click.option("--mr-iid", "-m", required=False, type=int, help="Merge request IID (GitLab) or PR number (GitHub)")
+@click.option("--no-comment", is_flag=True, default=False, help="Analyse but don't post an MR/PR comment")
 @click.option("--dry-run", is_flag=True, default=False, help="Print the comment instead of posting it")
 @click.option(
     "--rest-only", is_flag=True, default=False,
@@ -49,6 +49,16 @@ def main() -> None:
     "--list-tools", is_flag=True, default=False,
     help="Connect to the MCP server, print its tool list, and exit (useful for debugging)",
 )
+@click.option(
+    "--platform", default=None,
+    type=click.Choice(["gitlab", "github"], case_sensitive=False),
+    help="Platform to review on (default: gitlab). Overrides QUORUM_PLATFORM.",
+)
+@click.option(
+    "--format", "output_format", default="text",
+    type=click.Choice(["text", "sarif"], case_sensitive=False),
+    help="Output format: 'text' (default) or 'sarif' (SARIF 2.1.0 for GitHub Code Scanning).",
+)
 def review_cmd(
     project_id: str | None,
     mr_iid: int | None,
@@ -56,8 +66,10 @@ def review_cmd(
     dry_run: bool,
     rest_only: bool,
     list_tools: bool,
+    platform: str | None,
+    output_format: str,
 ) -> None:
-    """Review a merge request for distributed coordination anti-patterns."""
+    """Review a merge request / pull request for distributed coordination anti-patterns."""
     settings = get_settings()
     _configure_logging(settings.log_level)
 
@@ -65,16 +77,22 @@ def review_cmd(
         asyncio.run(_async_list_tools(settings))
         return
 
-    # Fall back to CI environment variables
-    project_id = project_id or settings.ci_project_path or settings.ci_project_id
-    mr_iid_val = mr_iid or (
-        int(settings.ci_merge_request_iid) if settings.ci_merge_request_iid else None
-    )
+    # Resolve platform (CLI flag overrides QUORUM_PLATFORM)
+    effective_platform = platform or getattr(settings, "platform", "gitlab") or "gitlab"
+
+    # Fall back to CI environment variables (GitLab only)
+    if effective_platform == "gitlab":
+        project_id = project_id or settings.ci_project_path or settings.ci_project_id
+        mr_iid_val = mr_iid or (
+            int(settings.ci_merge_request_iid) if settings.ci_merge_request_iid else None
+        )
+    else:
+        mr_iid_val = mr_iid
 
     if not project_id or not mr_iid_val:
         click.echo(
             "Error: --project-id and --mr-iid are required "
-            "(or set CI_PROJECT_PATH / CI_MERGE_REQUEST_IID env vars).",
+            "(or set CI_PROJECT_PATH / CI_MERGE_REQUEST_IID env vars for GitLab CI).",
             err=True,
         )
         sys.exit(2)
@@ -87,6 +105,8 @@ def review_cmd(
             post_comment=not (no_comment or dry_run),
             dry_run=dry_run,
             rest_only=rest_only,
+            platform=effective_platform,
+            output_format=output_format,
         )
     )
 
@@ -113,38 +133,55 @@ async def _async_review(
     post_comment: bool,
     dry_run: bool,
     rest_only: bool = False,
+    platform: str = "gitlab",
+    output_format: str = "text",
 ) -> None:
     from quorum.agent import QuorumAgent
     from quorum.formatter import format_comment
-    from quorum.gitlab_client import GitLabYodaMCPClient, GitLabRESTClient, make_client
+    from quorum.gitlab_client import make_client
+    from quorum.github_client import make_github_client
 
     agent = QuorumAgent(settings)
-    gitlab = make_client(settings, rest_only=rest_only, project_id=project_id)
 
-    if rest_only:
-        console.print("[yellow]ℹ  REST mode — GitLab REST API (lexical search, no binary needed)[/yellow]")
-    elif hasattr(gitlab, "_server_cmd"):
-        console.print("[cyan]ℹ  MCP mode — @zereight/mcp-gitlab (community, 107 tools)[/cyan]")
-    elif hasattr(gitlab, "_tmpdir") or hasattr(gitlab, "_make_git_context"):
-        console.print("[green]ℹ  MCP mode — glab mcp serve (official GitLab CLI, 191 tools)[/green]")
+    if platform == "github":
+        client = make_github_client(settings)
+        console.print("[blue]ℹ  GitHub mode — GitHub REST API[/blue]")
     else:
-        console.print("[yellow]ℹ  REST mode[/yellow]")
+        client = make_client(settings, rest_only=rest_only, project_id=project_id)
+        if rest_only:
+            console.print("[yellow]ℹ  REST mode — GitLab REST API (lexical search, no binary needed)[/yellow]")
+        elif hasattr(client, "_server_cmd"):
+            console.print("[cyan]ℹ  MCP mode — @zereight/mcp-gitlab (community, 107 tools)[/cyan]")
+        elif hasattr(client, "_make_git_context"):
+            console.print("[green]ℹ  MCP mode — glab mcp serve (official GitLab CLI, 191 tools)[/green]")
+        else:
+            console.print("[yellow]ℹ  REST mode[/yellow]")
 
-    async with gitlab.connect():
+    async with client.connect():
         result = await agent.review(
             project_id=project_id,
             mr_iid=mr_iid,
-            client=gitlab,
+            client=client,
             post_comment=post_comment and not dry_run,
         )
 
+    # SARIF output — write to stdout, skip the rich table
+    if output_format == "sarif":
+        from quorum.sarif import format_sarif
+        click.echo(format_sarif(result))
+        if result.blocked:
+            sys.exit(1)
+        return
+
     if dry_run:
-        console.print("\n[bold cyan]--- DRY RUN: MR comment body ---[/bold cyan]\n")
+        pr_label = "PR" if platform == "github" else "MR"
+        console.print(f"\n[bold cyan]--- DRY RUN: {pr_label} comment body ---[/bold cyan]\n")
         console.print(format_comment(result))
         console.print("[bold cyan]--- END ---[/bold cyan]\n")
 
     # Summary table
-    table = Table(title=f"Quorum Review — MR !{mr_iid}", show_lines=True)
+    pr_label = "PR" if platform == "github" else "MR"
+    table = Table(title=f"Quorum Review — {pr_label} !{mr_iid}", show_lines=True)
     table.add_column("Rule", style="cyan")
     table.add_column("Severity", style="bold")
     table.add_column("Confidence")

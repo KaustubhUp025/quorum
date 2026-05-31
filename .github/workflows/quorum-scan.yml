@@ -1,0 +1,58 @@
+# Quorum GitHub Code Scanning integration.
+#
+# Add this workflow to any GitHub repository to get inline PR annotations
+# for distributed coordination anti-patterns via GitHub Code Scanning.
+#
+# Required secrets:
+#   QUORUM_GEMINI_API_KEY  — Gemini API key (https://aistudio.google.com)
+#   GITHUB_TOKEN           — automatically provided by GitHub Actions
+#
+# Optional: set QUORUM_MIN_CONFIDENCE to adjust sensitivity (default: 60).
+
+name: Quorum Coordination Review
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  quorum:
+    name: Review for coordination anti-patterns
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # required to upload SARIF results
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Quorum
+        run: pip install quorum-linter
+
+      - name: Run Quorum review (SARIF output)
+        env:
+          QUORUM_GEMINI_API_KEY: ${{ secrets.QUORUM_GEMINI_API_KEY }}
+          QUORUM_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUORUM_PLATFORM: github
+          QUORUM_BLOCK_ON_CRITICAL: "false"   # let SARIF upload handle blocking
+        run: |
+          quorum review \
+            --platform github \
+            --project-id "${{ github.repository }}" \
+            --mr-iid "${{ github.event.pull_request.number }}" \
+            --format sarif \
+            --no-comment \
+            > results.sarif
+        continue-on-error: true   # upload SARIF even if findings are found
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+          category: quorum-coordination-review
