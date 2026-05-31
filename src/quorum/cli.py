@@ -19,11 +19,13 @@ log = structlog.get_logger(__name__)
 
 def _configure_logging(level: str) -> None:
     import logging
+    import sys
     structlog.configure(
         processors=[
             structlog.stdlib.add_log_level,
             structlog.dev.ConsoleRenderer(),
         ],
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, level.upper(), logging.INFO)
         ),
@@ -141,21 +143,25 @@ async def _async_review(
     from quorum.gitlab_client import make_client
     from quorum.github_client import make_github_client
 
+    # In SARIF mode stdout is reserved for machine-readable JSON; use stderr for banners.
+    from rich.console import Console as _Console
+    _out = _Console(stderr=True) if output_format == "sarif" else console
+
     agent = QuorumAgent(settings)
 
     if platform == "github":
         client = make_github_client(settings)
-        console.print("[blue]ℹ  GitHub mode — GitHub REST API[/blue]")
+        _out.print("[blue]ℹ  GitHub mode — GitHub REST API[/blue]")
     else:
         client = make_client(settings, rest_only=rest_only, project_id=project_id)
         if rest_only:
-            console.print("[yellow]ℹ  REST mode — GitLab REST API (lexical search, no binary needed)[/yellow]")
+            _out.print("[yellow]ℹ  REST mode — GitLab REST API (lexical search, no binary needed)[/yellow]")
         elif hasattr(client, "_server_cmd"):
-            console.print("[cyan]ℹ  MCP mode — @zereight/mcp-gitlab (community, 107 tools)[/cyan]")
+            _out.print("[cyan]ℹ  MCP mode — @zereight/mcp-gitlab (community, 107 tools)[/cyan]")
         elif hasattr(client, "_make_git_context"):
-            console.print("[green]ℹ  MCP mode — glab mcp serve (official GitLab CLI, 191 tools)[/green]")
+            _out.print("[green]ℹ  MCP mode — glab mcp serve (official GitLab CLI, 191 tools)[/green]")
         else:
-            console.print("[yellow]ℹ  REST mode[/yellow]")
+            _out.print("[yellow]ℹ  REST mode[/yellow]")
 
     async with client.connect():
         result = await agent.review(
@@ -175,9 +181,9 @@ async def _async_review(
 
     if dry_run:
         pr_label = "PR" if platform == "github" else "MR"
-        console.print(f"\n[bold cyan]--- DRY RUN: {pr_label} comment body ---[/bold cyan]\n")
-        console.print(format_comment(result))
-        console.print("[bold cyan]--- END ---[/bold cyan]\n")
+        _out.print(f"\n[bold cyan]--- DRY RUN: {pr_label} comment body ---[/bold cyan]\n")
+        _out.print(format_comment(result))
+        _out.print("[bold cyan]--- END ---[/bold cyan]\n")
 
     # Summary table
     pr_label = "PR" if platform == "github" else "MR"
@@ -195,13 +201,13 @@ async def _async_review(
             f.title,
         )
 
-    console.print(table)
+    _out.print(table)
 
     if result.blocked:
-        console.print("\n[bold red]⛔  CRITICAL findings found — pipeline blocked.[/bold red]")
+        _out.print("\n[bold red]⛔  CRITICAL findings found — pipeline blocked.[/bold red]")
         sys.exit(1)
     else:
-        console.print(
+        _out.print(
             f"\n[bold green]✅  Review complete. {result.critical_count} critical, "
             f"{result.high_count} high.[/bold green]"
         )
