@@ -20,9 +20,18 @@ RULE = Rule(
         "backoff", "wait", "attempt", "maxretries", "max_retries",
     ],
     surface_patterns=[
+        # Java-style deterministic sleep
         r'Thread\.sleep\s*\(\s*\w+\s*\*',
+        # Python time.sleep with a literal or simple multiply: sleep(5), sleep(x*2)
         r'time\.sleep\s*\(\s*(?:\d+|\w+\s*\*\s*\d+)\s*\)',
+        # asyncio.sleep with a literal or simple multiply
         r'asyncio\.sleep\s*\(\s*(?:\d+|\w+\s*\*\s*\d+)\s*\)',
+        # Any time.sleep with a variable or expression — broad but safe combined
+        # with retry/backoff keywords above (catches: sleep(delay), sleep(min(...)))
+        r'time\.sleep\s*\([^\)\n]{1,80}\)',
+        # Exponential doubling patterns: interval *= 2, BASE_DELAY ** retry_count
+        r'\w+\s*\*=\s*2\b',
+        r'\*\*\s*(?:retry_count|attempt|retries|retry|n_retries|num_retries)\b',
         r'for\s+\w+\s+in\s+range.*retry',
         r'attempt\s*\*\s*\d+',
         r'2\s*\*\*\s*attempt',
