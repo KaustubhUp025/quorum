@@ -26,6 +26,13 @@ def create_app(settings: Settings) -> FastAPI:
         version=__version__,
     )
 
+    if not settings.webhook_secret:
+        log.warning(
+            "webhook_secret_not_configured",
+            risk="Any caller who knows the URL can trigger reviews. "
+                 "Set QUORUM_WEBHOOK_SECRET to authenticate incoming webhooks.",
+        )
+
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok", "version": __version__}

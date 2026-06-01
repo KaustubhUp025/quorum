@@ -14,6 +14,7 @@ import base64
 import json
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -190,8 +191,9 @@ class GitHubRESTClient:
         params: dict = {}
         if ref and ref != "HEAD":
             params["ref"] = ref
+        encoded_path = quote(file_path, safe="/")  # preserve path separators, encode rest
         resp = await self._client.get(
-            f"{self._base}/repos/{project_id}/contents/{file_path}",
+            f"{self._base}/repos/{project_id}/contents/{encoded_path}",
             params=params,
         )
         if resp.status_code == 404:
@@ -227,9 +229,10 @@ class GitHubRESTClient:
     async def commit_file(
         self, project_id: str, branch: str, file_path: str, content: str, message: str
     ) -> str:
+        encoded_path = quote(file_path, safe="/")
         # Check whether the file already exists (need its SHA for updates)
         get_resp = await self._client.get(
-            f"{self._base}/repos/{project_id}/contents/{file_path}",
+            f"{self._base}/repos/{project_id}/contents/{encoded_path}",
             params={"ref": branch},
         )
         body: dict = {
@@ -241,7 +244,7 @@ class GitHubRESTClient:
             body["sha"] = get_resp.json().get("sha", "")
 
         resp = await self._client.put(
-            f"{self._base}/repos/{project_id}/contents/{file_path}",
+            f"{self._base}/repos/{project_id}/contents/{encoded_path}",
             json=body,
         )
         resp.raise_for_status()

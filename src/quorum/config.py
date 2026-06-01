@@ -7,8 +7,17 @@ GitLab CI auto-injected variables (``CI_PROJECT_ID`` etc.) are matched by their
 exact names via ``validation_alias`` — the prefix is NOT applied to those.
 """
 
+import ipaddress
+
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Cloud metadata / internal addresses that should never be a GitLab URL target.
+_SSRF_BLOCKED_HOSTS = frozenset({
+    "169.254.169.254",       # AWS/GCP/Azure instance metadata
+    "metadata.google.internal",
+    "169.254.170.2",         # ECS task metadata
+})
 
 
 class Settings(BaseSettings):
@@ -156,9 +165,27 @@ class Settings(BaseSettings):
     @field_validator("gitlab_url")
     @classmethod
     def validate_gitlab_url(cls, v: str) -> str:
+        from urllib.parse import urlparse
         v = v.rstrip("/")
         if not v.startswith(("https://", "http://")):
             raise ValueError("gitlab_url must start with 'https://' or 'http://'")
+        # Block requests to cloud metadata endpoints and link-local addresses
+        # that could be exploited for SSRF on Cloud Run / GCE.
+        parsed = urlparse(v)
+        host = parsed.hostname or ""
+        if host in _SSRF_BLOCKED_HOSTS:
+            raise ValueError(f"gitlab_url hostname '{host}' is blocked (SSRF protection)")
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.is_link_local or addr.is_loopback or addr.is_private:
+                raise ValueError(
+                    f"gitlab_url hostname '{host}' resolves to a private/link-local address "
+                    "(SSRF protection — use a public GitLab instance URL)"
+                )
+        except ValueError as exc:
+            if "SSRF protection" in str(exc):
+                raise
+            # Not an IP address — domain name, allow through
         return v
 
     @property

@@ -57,6 +57,25 @@ def load_project_config(path: str = ".quorum.yml") -> ProjectConfig:
     rules_section = data.get("rules") or {}
     disabled_raw = rules_section.get("disabled") or data.get("disabled_rules") or []
 
+    raw_backend = data.get("llm_backend")
+    # Accept any string that starts with a known provider prefix or is a Gemini model name.
+    # Reject values that look like file:// or other non-LLM URI schemes that LiteLLM
+    # might try to open as local resources.
+    _safe_backend = None
+    if isinstance(raw_backend, str):
+        _ALLOWED_PREFIXES = (
+            "gemini/", "openai/", "anthropic/", "ollama/", "groq/",
+            "together_ai/", "azure/", "bedrock/", "cohere/", "vertex_ai/",
+        )
+        if any(raw_backend.startswith(p) for p in _ALLOWED_PREFIXES):
+            _safe_backend = raw_backend
+        else:
+            log.warning(
+                "project_config_llm_backend_rejected",
+                value=raw_backend,
+                reason="does not start with a known provider prefix",
+            )
+
     config = ProjectConfig(
         disabled_rules=[str(r).upper() for r in disabled_raw],
         confidence_threshold=(
@@ -66,7 +85,7 @@ def load_project_config(path: str = ".quorum.yml") -> ProjectConfig:
         ignore_paths=list(data.get("ignore_paths") or []),
         create_fix_mrs=data.get("create_fix_mrs"),
         platform=data.get("platform"),
-        llm_backend=data.get("llm_backend"),
+        llm_backend=_safe_backend,
     )
 
     log.info(
