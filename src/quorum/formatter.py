@@ -1,10 +1,25 @@
-"""Format a ReviewResult as a GitLab-flavoured Markdown MR comment."""
+"""Stage 3 of the Quorum agent pipeline — formats and renders review results.
+
+ReportFormatterAgent converts a ReviewResult into a structured Markdown MR comment.
+"""
 
 from __future__ import annotations
 
 from quorum.models import Finding, ReviewResult, Severity
 
 _SEP = "\n\n---\n\n"
+
+
+class ReportFormatterAgent:
+    """Stage 3 — renders a ReviewResult as a structured Markdown comment.
+
+    Produces the final human-readable output posted to the MR/PR. Handles
+    severity ordering, fix MR links, CI correlation notes, and the footer.
+    """
+
+    def format(self, result: ReviewResult) -> str:
+        """Return the Markdown body for the MR comment."""
+        return format_comment(result)
 
 
 def _finding_block(f: Finding) -> str:

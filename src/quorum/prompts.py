@@ -56,6 +56,26 @@ End your response with the JSON block enclosed in ```json ... ```.
 """
 
 
+def build_cacheable_rules_text() -> str:
+    """Build the full rules reference document to include in the Gemini context cache.
+
+    This text (combined with SYSTEM_PROMPT as system_instruction) forms the constant
+    prefix that is cached — every review reuses it without paying for the tokens again.
+    """
+    from quorum.rules.registry import REGISTRY  # late import to avoid circular
+
+    sections = ["## Coordination Rules Reference\n"]
+    for rule in REGISTRY.values():
+        sections.append(
+            f"### {rule.id} — {rule.name}\n"
+            f"{rule.description}\n\n"
+            f"**Reference:** {rule.reference}\n"
+            f"**Reasoning guidance:** {rule.reasoning_guidance}\n"
+            f"**Suggested search queries:** {', '.join(rule.search_query_templates)}\n"
+        )
+    return "\n".join(sections)
+
+
 def build_review_prompt(
     diff: str,
     triggered_rules: list[Rule],

@@ -1,19 +1,19 @@
-"""Quorum agent — orchestrates Gemini + GitLab MCP to review a merge request.
+"""Three-stage Quorum agent pipeline.
 
-Agent loop:
-  1. Fetch MR diff and metadata via GitLab client.
-  2. Run surface detector (fast pre-filter, no API calls).
-  3. If no surfaces detected → exit early.
-  4. Build the investigation prompt and expose MCP tools as Gemini function declarations.
-  5. Run the LLM tool-calling loop (Gemini native or LiteLLM for alternate backends):
-       LLM calls → Python executes MCP tool → result sent back → repeat.
-     Gemini 2.5 Pro uses dynamic thinking (thinking_budget=-1) and Google Search grounding.
-     LiteLLM backends (ollama, openai, anthropic) use OpenAI-compatible tool calling.
-  6. Parse findings from the final LLM response.
-  7. (Optional) Generate fix code and open a draft fix MR for each CRITICAL finding.
-  8. (Optional) Correlate findings with a failing CI pipeline.
-  9. Format and post comment to the MR.
- 10. Return ReviewResult (blocking status for CI exit code).
+Stage 1 — SurfaceDetectorAgent (quorum.detector):
+    Fast regex/keyword pre-filter. Zero API calls, ~5ms.
+    Identifies which rules to investigate; exits early if none match.
+
+Stage 2 — DeepReasoningAgent (this module):
+    Gemini 2.5 Pro multi-turn tool-calling loop.
+    Calls GitLab MCP / GitHub REST to investigate the diff across the full codebase.
+    Uses dynamic thinking (thinking_budget=-1) and Google Search grounding.
+    Supports LiteLLM as an alternate backend for non-Gemini models.
+
+Stage 3 — ReportFormatterAgent (quorum.formatter):
+    Renders findings as a structured Markdown comment.
+    Posts comment to MR/PR, opens draft fix MRs for CRITICAL findings (opt-in),
+    outputs SARIF 2.1.0 for GitHub Code Scanning.
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from quorum.config import Settings
-from quorum.detector import detect_surfaces
-from quorum.formatter import format_comment
+from quorum.detector import SurfaceDetectorAgent, detect_surfaces
+from quorum.formatter import ReportFormatterAgent, format_comment
 from quorum.gitlab_client import GitLabYodaMCPClient, GitLabRESTClient
 from quorum.models import Finding, ReviewResult, Severity
-from quorum.prompts import SYSTEM_PROMPT, build_review_prompt
+from quorum.prompts import SYSTEM_PROMPT, build_cacheable_rules_text, build_review_prompt
 
 log = structlog.get_logger(__name__)
 
@@ -146,6 +146,55 @@ def _make_gemini_client(settings: Settings) -> genai.Client:
 
 
 # ---------------------------------------------------------------------------
+# Context cache initialisation
+# ---------------------------------------------------------------------------
+
+def _init_context_cache(gemini: genai.Client, settings: Settings) -> str | None:
+    """Try to create a Gemini context cache for the system prompt + full rules text.
+
+    The cache covers the constant prefix of every review request (SYSTEM_PROMPT +
+    all 10 rule definitions). On a cache hit, Gemini skips re-tokenising this prefix,
+    giving roughly a 75% token-cost discount on the cached portion.
+
+    Returns the cache resource name (e.g. 'cachedContents/xyz') on success, or None
+    if caching is unavailable (API key plan, below minimum token count, etc.).
+    """
+    rules_text = build_cacheable_rules_text()
+    try:
+        # Tools MUST be in the cache — Gemini rejects 'tools' on the generate call
+        # when cached_content is also set (400 INVALID_ARGUMENT if split).
+        cache = gemini.caches.create(
+            model=settings.gemini_model,
+            config=types.CreateCachedContentConfig(
+                display_name="quorum-rules-v1",
+                system_instruction=SYSTEM_PROMPT,
+                tools=_GEMINI_TOOLS,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=rules_text)],
+                    ),
+                    types.Content(
+                        role="model",
+                        parts=[types.Part(
+                            text=(
+                                "Understood. I have the full coordination rules reference. "
+                                "Ready to review merge requests for anti-patterns."
+                            )
+                        )],
+                    ),
+                ],
+                ttl="3600s",
+            ),
+        )
+        log.info("context_cache_created", name=cache.name)
+        return cache.name
+    except Exception as exc:
+        log.info("context_cache_skipped", reason=str(exc)[:120])
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Findings parser
 # ---------------------------------------------------------------------------
 
@@ -183,13 +232,25 @@ def _parse_findings(raw: dict[str, Any]) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
-# Core agent loop
+# Stage 2 — DeepReasoningAgent
 # ---------------------------------------------------------------------------
 
-class QuorumAgent:
+class DeepReasoningAgent:
+    """Stage 2 — Gemini 2.5 Pro multi-turn investigation loop.
+
+    Receives triggered rules from SurfaceDetectorAgent, runs the tool-calling loop
+    (semantic_code_search, get_merge_request, get_file_contents) to gather cross-repo
+    context, then returns structured findings for ReportFormatterAgent.
+    """
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._gemini = _make_gemini_client(settings)
+        # Try to activate context caching for the constant system-prompt + rules prefix.
+        # Falls back to direct system_instruction if the plan/quota doesn't support it.
+        self._cache_name: str | None = None
+        if settings.llm_backend.startswith("gemini/"):
+            self._cache_name = _init_context_cache(self._gemini, settings)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -199,10 +260,16 @@ class QuorumAgent:
         self,
         contents: list[types.Content],
     ) -> types.GenerateContentResponse:
-        return await self._gemini.aio.models.generate_content(
-            model=self._settings.gemini_model,
-            contents=contents,
-            config=types.GenerateContentConfig(
+        if self._cache_name:
+            # When using cached_content, system_instruction AND tools are already
+            # embedded in the cache — passing them again causes 400 INVALID_ARGUMENT.
+            config = types.GenerateContentConfig(
+                cached_content=self._cache_name,
+                temperature=0.1,
+                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+            )
+        else:
+            config = types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 tools=_GEMINI_TOOLS,
                 temperature=0.1,
@@ -210,7 +277,11 @@ class QuorumAgent:
                 # Harder multi-file problems (saga, fencing token) get more thinking;
                 # simpler surface checks get less. -1 = model-controlled.
                 thinking_config=types.ThinkingConfig(thinking_budget=-1),
-            ),
+            )
+        return await self._gemini.aio.models.generate_content(
+            model=self._settings.gemini_model,
+            contents=contents,
+            config=config,
         )
 
     async def _run_tool(
@@ -731,7 +802,7 @@ class QuorumAgent:
             return None
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # Public entry point — orchestrates all three pipeline stages
     # ------------------------------------------------------------------
 
     async def review(
@@ -743,14 +814,16 @@ class QuorumAgent:
     ) -> ReviewResult:
         log.info("review_started", project_id=project_id, mr_iid=mr_iid)
 
-        # Step 1 — fetch diff and MR metadata in parallel
+        # Fetch diff and MR metadata
         diff_raw = await client.get_merge_request_diffs(project_id, mr_iid)
         mr_meta = await client.get_mr_metadata(project_id, mr_iid)
         source_branch = mr_meta.get("source_branch", "")
         target_branch = mr_meta.get("target_branch", "main")
 
-        # Step 2 — surface detection + disabled-rule filtering
-        triggered_rules = detect_surfaces(diff_raw)
+        # ── Stage 1: SurfaceDetectorAgent ────────────────────────────
+        surface_detector = SurfaceDetectorAgent()
+        triggered_rules = surface_detector.detect(diff_raw)
+
         disabled = {r.upper() for r in (self._settings.disabled_rules or [])}
         if disabled:
             before = len(triggered_rules)
@@ -776,9 +849,7 @@ class QuorumAgent:
                 await client.create_workitem_note(project_id, mr_iid, comment)
             return result
 
-        log.info("surfaces_detected", count=len(triggered_rules), rules=[r.id for r in triggered_rules])
-
-        # Step 3 — build prompt and run agent loop
+        # ── Stage 2: DeepReasoningAgent (self) ───────────────────────
         prompt = build_review_prompt(
             diff=diff_raw,
             triggered_rules=triggered_rules,
@@ -786,7 +857,6 @@ class QuorumAgent:
             mr_iid=mr_iid,
         )
 
-        # Select backend: native google-genai for Gemini, LiteLLM for everything else
         use_gemini = self._settings.llm_backend.startswith("gemini/")
         if use_gemini:
             final_text = await self._agent_loop(prompt, client, project_id, mr_iid)
@@ -794,7 +864,7 @@ class QuorumAgent:
             log.info("llm_backend_litellm", model=self._settings.llm_backend)
             final_text = await self._agent_loop_litellm(prompt, client, project_id, mr_iid)
 
-        # Step 4 — parse findings
+        # Parse findings
         findings: list[Finding] = []
         try:
             raw = _extract_json(final_text)
@@ -811,11 +881,11 @@ class QuorumAgent:
                 response_preview=final_text[:500],
             )
 
-        # Step 5 — enrich confirmed findings with real citations via Google Search
+        # Enrich confirmed findings with real citations via Google Search
         if findings:
             findings = await self._enrich_with_citations(findings)
 
-        # Step 6 — create draft fix MRs for CRITICAL findings (opt-in)
+        # Create draft fix MRs for CRITICAL findings (opt-in)
         if findings and self._settings.create_fix_mrs and source_branch:
             findings = await self._create_fix_mrs(
                 findings, source_branch, target_branch, client, project_id
@@ -833,7 +903,7 @@ class QuorumAgent:
             blocked=blocked,
         )
 
-        # Step 7 — correlate with CI failures (opt-in)
+        # Correlate with CI failures (opt-in)
         if self._settings.correlate_ci and findings:
             result.ci_correlation = await self._correlate_with_ci_failure(
                 project_id, mr_iid, findings, client
@@ -847,9 +917,14 @@ class QuorumAgent:
             blocked=blocked,
         )
 
-        # Step 8 — post comment
+        # ── Stage 3: ReportFormatterAgent ────────────────────────────
         if post_comment:
-            comment_body = format_comment(result)
+            report_formatter = ReportFormatterAgent()
+            comment_body = report_formatter.format(result)
             await client.create_workitem_note(project_id, mr_iid, comment_body)
 
         return result
+
+
+# Backward-compatible alias — all existing imports and tests continue to work.
+QuorumAgent = DeepReasoningAgent

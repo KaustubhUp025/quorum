@@ -1,6 +1,6 @@
-"""Fast coordination-surface pre-filter.
+"""Fast coordination-surface pre-filter — Stage 1 of the Quorum agent pipeline.
 
-Runs cheap regex/keyword checks before invoking Gemini.
+SurfaceDetectorAgent runs cheap regex/keyword checks before invoking Gemini.
 If no surface is detected, the review exits early without any API calls.
 """
 
@@ -12,6 +12,18 @@ from quorum.rules.registry import REGISTRY
 from quorum.rules.base import Rule
 
 log = structlog.get_logger(__name__)
+
+
+class SurfaceDetectorAgent:
+    """Stage 1 — fast pre-filter that identifies coordination surfaces in a diff.
+
+    Operates in ~5ms with zero API calls. Returns the list of rules whose surface
+    patterns matched; an empty list means skip the review entirely.
+    """
+
+    def detect(self, diff: str) -> list[Rule]:
+        """Return rules whose surface keywords/patterns appear in *diff*."""
+        return detect_surfaces(diff)
 
 
 def detect_surfaces(diff: str) -> list[Rule]:
