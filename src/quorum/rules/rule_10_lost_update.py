@@ -23,8 +23,8 @@ RULE = Rule(
         # Go (database/sql, GORM, sqlx)
         "QueryRow(", "db.Get(", "tx.Get(", "row.Scan(",
         "db.First(", "db.Find(", "gorm.First",
-        # JavaScript / TypeScript (TypeORM, Mongoose, Prisma)
-        "findById(", "findOne(", "findOneAndUpdate(",
+        # JavaScript / TypeScript (TypeORM 0.2.x uses findById; 0.3+ uses findOneBy/findOne)
+        "findById(", "findOne(", "findoneandupdate(",
         "prisma.findUnique(", "prisma.findFirst(",
         # Java / Kotlin (JPA, Hibernate, JDBC)
         "entitymanager.find(", "getById(", "findById(",

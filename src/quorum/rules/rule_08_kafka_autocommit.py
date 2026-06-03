@@ -26,7 +26,8 @@ RULE = Rule(
         "kafkalistener", "@kafkalistener",
         # Go sarama / kafka-go / confluent-kafka-go
         "autocommit", "CommitMessages", "commitoffsets",
-        "CommitInterval", "AutoCommit",
+        "AutoCommit",
+        # kafka-go: non-zero CommitInterval enables periodic auto-commit (0 = disabled/manual)
         # JavaScript / TypeScript kafkajs
         "eachMessage", "eachBatch", "autoCommit",
         # Ruby ruby-kafka / karafka
@@ -48,8 +49,9 @@ RULE = Rule(
         r'ack\.commit\s*\(',
         # Go sarama: cfg.Consumer.Offsets.AutoCommit.Enable = true
         r'AutoCommit\.Enable\s*=\s*true',
-        # Go kafka-go: CommitInterval != 0 alongside manual reads
-        r'CommitInterval\s*:\s*0',
+        # Go kafka-go: non-zero CommitInterval enables periodic auto-commit
+        # CommitInterval: 0 is the SAFE value (disables auto-commit) — do NOT flag that
+        r'CommitInterval\s*:\s*(?!0\b)\w',
         # JavaScript kafkajs: { autoCommit: true } or autoCommit: false (either triggers investigation)
         r'autoCommit\s*:\s*(?:true|false)',
         # Ruby karafka: consumer.automatically_mark_as_processed = true
