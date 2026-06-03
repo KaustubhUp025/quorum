@@ -139,9 +139,11 @@ async def file_finding_issue(
                 log.warning("issue_filer_exception", error=str(exc))
                 has_issues = False
 
-        # Fallback: try to open a draft fix PR if client supports it
+        # Fallback: try to open ONE draft fix PR for the first blocked finding only.
+        # Subsequent findings skip the fix-PR path (same source→target branch would
+        # cause a 409 duplicate-MR error) and go straight to manual warning.
         if not has_issues:
-            fix_pr_url = await _try_fix_pr_fallback(client, result, finding, platform)
+            fix_pr_url = await _try_fix_pr_fallback(client, result, finding, platform) if not filing_results else None
             if fix_pr_url:
                 r.url = fix_pr_url
                 r.method = "fix_pr"

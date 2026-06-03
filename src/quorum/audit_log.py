@@ -66,7 +66,16 @@ def _load_raw() -> list[dict]:
 
 def load_entries() -> list[AuditEntry]:
     """Return all audit log entries in chronological order (oldest first)."""
-    return [AuditEntry(**e) for e in _load_raw()]
+    entries = []
+    for raw_entry in _load_raw():
+        try:
+            entries.append(AuditEntry(**raw_entry))
+        except Exception as exc:
+            import structlog as _structlog
+            _structlog.get_logger(__name__).warning(
+                "audit_log_entry_skipped", error=str(exc), entry_id=raw_entry.get("id")
+            )
+    return entries
 
 
 def append_entry(

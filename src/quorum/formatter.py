@@ -119,7 +119,7 @@ def format_comment(result: ReviewResult) -> str:
 
 def _footer() -> str:
     return (
-        "*Powered by [Quorum](https://github.com/yourusername/quorum) · "
+        "*Powered by [Quorum](https://github.com/KaustubhUp025/quorum) · "
         "Gemini 2.5 Pro + GitLab MCP · "
         "[Docs](docs/RULES.md) · "
         "[Add a rule](docs/CONTRIBUTING.md)*"

@@ -170,6 +170,8 @@ async def _async_review(
         else:
             _out.print(f"[yellow]ℹ  REST mode · LLM: {llm_label}[/yellow]")
 
+    # Auto-filing needs the live client, so keep it inside the connect block.
+    filed_issue_url: str | None = None
     async with client.connect():
         result = await agent.review(
             project_id=project_id,
@@ -177,6 +179,18 @@ async def _async_review(
             client=client,
             post_comment=post_comment and not dry_run,
         )
+
+        # Auto-file issues when enabled and there are HIGH+ findings
+        if settings.auto_file_issues and not dry_run and result.findings:
+            from quorum.issue_filer import file_finding_issue
+            filing_results = await file_finding_issue(
+                client, result,
+                platform=platform,
+                min_severity=settings.auto_file_issues_min_severity,
+            )
+            for fr in filing_results:
+                if fr.url:
+                    filed_issue_url = fr.url
 
     # SARIF output — write to stdout, skip the rich table
     if output_format == "sarif":
@@ -212,25 +226,13 @@ async def _async_review(
 
     _out.print(table)
 
-    # Auto-file issues when enabled and there are HIGH+ findings
-    filed_issue_url: str | None = None
-    if settings.auto_file_issues and not dry_run and result.findings:
-        from quorum.issue_filer import file_finding_issue
-        filing_results = await file_finding_issue(
-            client, result,
-            platform=platform,
-            min_severity=settings.auto_file_issues_min_severity,
+    if filed_issue_url:
+        _out.print(f"[cyan]  → Filed issue: {filed_issue_url}[/cyan]")
+    elif settings.auto_file_issues and not dry_run and result.findings:
+        _out.print(
+            "[yellow]  ⚠  Could not file issue automatically. "
+            "Use `quorum file-issue` to retry or file manually.[/yellow]"
         )
-        for fr in filing_results:
-            if fr.url:
-                filed_issue_url = fr.url
-                method_label = "issue" if fr.method == "issue" else "draft fix PR"
-                _out.print(f"[cyan]  → Filed {method_label}: {fr.url}[/cyan]")
-            elif fr.method == "manual":
-                _out.print(
-                    f"[yellow]  ⚠  Could not file issue for {fr.blocked_reason or 'unknown reason'}. "
-                    f"Use `quorum file-issue` to retry or file manually.[/yellow]"
-                )
 
     # Append to audit log regardless of outcome
     from quorum.audit_log import append_entry

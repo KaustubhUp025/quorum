@@ -336,6 +336,9 @@ class DeepReasoningAgent:
 
         for round_num in range(self._settings.max_tool_rounds):
             response = await self._generate(contents)
+            if not response.candidates:
+                log.warning("empty_candidates", round=round_num, reason="safety_block_or_quota")
+                break
             candidate = response.candidates[0]
             contents.append(candidate.content)
 
@@ -396,6 +399,9 @@ class DeepReasoningAgent:
             )
         )
         response = await self._generate(contents)
+        if not response.candidates:
+            log.warning("empty_candidates_at_summary", reason="safety_block_or_quota")
+            return ""
         return "\n".join(
             p.text for p in response.candidates[0].content.parts
             if p.text and not getattr(p, "thought", False)
@@ -759,7 +765,12 @@ class DeepReasoningAgent:
             # Most recent pipeline first
             latest = pipelines[0]
             status = latest.get("status", "")
-            if status not in ("failed", "running"):
+            conclusion = latest.get("conclusion", "")
+            # GitLab: status="failed"|"running"
+            # GitHub: status="completed"|"in_progress", conclusion="failure"|"success"|...
+            is_failed = status == "failed" or (status == "completed" and conclusion == "failure")
+            is_running = status == "running" or status == "in_progress"
+            if not (is_failed or is_running):
                 return None
 
             pipeline_id = latest.get("id")
@@ -883,6 +894,7 @@ class DeepReasoningAgent:
 
         # Parse findings
         findings: list[Finding] = []
+        parse_error: str | None = None
         try:
             raw = _extract_json(final_text)
             all_findings = _parse_findings(raw)
@@ -892,14 +904,18 @@ class DeepReasoningAgent:
                 or f.severity == Severity.PASS
             ]
         except Exception as exc:
+            parse_error = str(exc)
             log.error(
                 "findings_parse_failed",
-                error=str(exc),
+                error=parse_error,
                 response_preview=final_text[:500],
             )
 
+        use_gemini_features = self._settings.llm_backend.startswith("gemini/")
+
         # Enrich confirmed findings with real citations via Google Search
-        if findings:
+        # (Gemini-native feature — skip on LiteLLM backends)
+        if findings and use_gemini_features:
             findings = await self._enrich_with_citations(findings)
 
         # Create draft fix MRs for CRITICAL findings (opt-in)
@@ -937,7 +953,17 @@ class DeepReasoningAgent:
         # ── Stage 3: ReportFormatterAgent ────────────────────────────
         if post_comment:
             report_formatter = ReportFormatterAgent()
-            comment_body = report_formatter.format(result)
+            if parse_error:
+                # Post an explicit error notice rather than a misleading "no issues" comment.
+                comment_body = (
+                    "## Quorum · Distributed Coordination Review\n\n"
+                    "> ⚠️ **Analysis incomplete** — Quorum could not parse the LLM response.\n\n"
+                    "Coordination surfaces were detected in this diff but the findings could "
+                    "not be extracted. Please re-run or review manually.\n\n"
+                    f"*Error: {parse_error[:200]}*"
+                )
+            else:
+                comment_body = report_formatter.format(result)
             await client.create_workitem_note(project_id, mr_iid, comment_body)
 
         return result

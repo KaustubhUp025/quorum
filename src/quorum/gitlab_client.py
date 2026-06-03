@@ -121,7 +121,10 @@ class GitLabGlabMCPClient:
     @asynccontextmanager
     async def connect(self) -> AsyncGenerator["GitLabGlabMCPClient", None]:
         """Start `glab mcp serve` as a subprocess and initialise the MCP session."""
-        self._tmpdir = self._make_git_context()
+        import asyncio
+        # Run the blocking git subprocess calls on a thread pool to avoid stalling
+        # the asyncio event loop (critical on Cloud Run with concurrent requests).
+        self._tmpdir = await asyncio.to_thread(self._make_git_context)
         env = {
             **get_default_environment(),
             "GITLAB_TOKEN": self._token,
@@ -200,6 +203,18 @@ class GitLabGlabMCPClient:
         assert self._rest is not None
         return await self._rest.get_merge_request(project_id, mr_iid)
 
+    # Phrases returned by GitLab's AI layer when semantic search isn't ready.
+    # These come back as successful MCP responses (no [GLAB ERROR] prefix) but are
+    # useless as code evidence — fall through to lexical REST search instead.
+    _SEMANTIC_ERROR_PHRASES = (
+        "no embeddings",
+        "indexing started",
+        "indexing in progress",
+        "not available",
+        "feature not available",
+        "semantic search is disabled",
+    )
+
     async def semantic_code_search(
         self, project_id: str, query: str, max_results: int = 5
     ) -> str:
@@ -208,9 +223,12 @@ class GitLabGlabMCPClient:
                 "glab_search_semantic",
                 flags={"query": query, "limit": max_results},
             )
-            if "[GLAB ERROR]" not in result:
+            result_lower = result.lower()
+            is_error = "[GLAB ERROR]" in result or any(
+                phrase in result_lower for phrase in self._SEMANTIC_ERROR_PHRASES
+            )
+            if not is_error:
                 return result
-            # If semantic search fails (e.g. indexing not ready), fall back
             log.warning("glab_semantic_search_failed_falling_back", error=result[:200])
         assert self._rest is not None
         return await self._rest.semantic_code_search(project_id, query, max_results)
@@ -913,17 +931,26 @@ class GitLabRESTClient:
     async def commit_file(
         self, project_id: str, branch: str, file_path: str, content: str, message: str
     ) -> str:
+        # Determine whether to create or update: GitLab's commits API requires the
+        # correct action — "update" fails with 400 if the file doesn't exist yet.
+        encoded_path = quote(file_path, safe="")
+        check = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/repository/files/{encoded_path}",
+            params={"ref": branch},
+        )
+        action = "create" if check.status_code == 404 else "update"
+
         resp = await self._client.post(
             f"{self._base}/projects/{self._pid(project_id)}/repository/commits",
             json={
                 "branch": branch,
                 "commit_message": message,
-                "actions": [{"action": "update", "file_path": file_path, "content": content}],
+                "actions": [{"action": action, "file_path": file_path, "content": content}],
             },
         )
         resp.raise_for_status()
         data = resp.json()
-        log.info("rest_file_committed", short_id=data.get("short_id"), file=file_path)
+        log.info("rest_file_committed", short_id=data.get("short_id"), file=file_path, action=action)
         return json.dumps({"id": data.get("id"), "short_id": data.get("short_id")})
 
     # ------------------------------------------------------------------

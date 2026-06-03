@@ -76,12 +76,24 @@ def load_project_config(path: str = ".quorum.yml") -> ProjectConfig:
                 reason="does not start with a known provider prefix",
             )
 
+    raw_threshold = (
+        data.get("confidence_threshold")
+        or rules_section.get("confidence_threshold")
+    )
+    confidence_threshold: int | None = None
+    if raw_threshold is not None:
+        try:
+            confidence_threshold = int(raw_threshold)
+        except (TypeError, ValueError):
+            log.warning(
+                "project_config_confidence_threshold_invalid",
+                value=raw_threshold,
+                reason="must be an integer",
+            )
+
     config = ProjectConfig(
         disabled_rules=[str(r).upper() for r in disabled_raw],
-        confidence_threshold=(
-            data.get("confidence_threshold")
-            or rules_section.get("confidence_threshold")
-        ),
+        confidence_threshold=confidence_threshold,
         ignore_paths=list(data.get("ignore_paths") or []),
         create_fix_mrs=data.get("create_fix_mrs"),
         platform=data.get("platform"),

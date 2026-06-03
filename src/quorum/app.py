@@ -51,7 +51,10 @@ def create_app(settings: Settings) -> FastAPI:
             ):
                 raise HTTPException(status_code=403, detail="Invalid X-Gitlab-Token")
 
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
         if x_gitlab_event not in ("Merge Request Hook", "merge_request"):
             return JSONResponse({"status": "ignored", "reason": "not a merge_request event"})
@@ -63,7 +66,13 @@ def create_app(settings: Settings) -> FastAPI:
             return JSONResponse({"status": "ignored", "reason": f"mr action '{mr_action}' not reviewed"})
 
         project = payload.get("project", {})
-        project_id: str = str(project.get("id", ""))
+        # Use namespace path (e.g. "group/project") — glab needs this to build a valid
+        # git remote URL. Numeric project.id would produce https://gitlab.com/12345.git
+        # which glab cannot resolve. Fall back to numeric id only if path is absent.
+        project_id: str = (
+            project.get("path_with_namespace")
+            or str(project.get("id", ""))
+        )
         mr_iid: int = int(mr.get("iid", 0))
 
         if not project_id or not mr_iid:
@@ -92,7 +101,7 @@ async def _run_review_background(
 
     try:
         agent = QuorumAgent(settings)
-        gitlab = make_client(settings)
+        gitlab = make_client(settings, project_id=project_id)
         async with gitlab.connect():
             result = await agent.review(
                 project_id=project_id,

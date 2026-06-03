@@ -23,9 +23,12 @@ _SARIF_LEVEL: dict[Severity, str] = {
 }
 
 
-def format_sarif(result: ReviewResult, tool_version: str = "0.1.0") -> str:
+def format_sarif(result: ReviewResult, tool_version: str | None = None) -> str:
     """Return a SARIF 2.1.0 JSON string for all non-PASS findings."""
+    from quorum import __version__
     from quorum.rules.registry import REGISTRY
+    if tool_version is None:
+        tool_version = __version__
 
     seen_rules: dict[str, dict] = {}
     sarif_results: list[dict] = []
