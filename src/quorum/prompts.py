@@ -6,7 +6,10 @@ from quorum.rules.base import Rule
 
 
 SYSTEM_PROMPT = """You are Quorum, an expert distributed-systems code reviewer.
-Your sole purpose is to detect coordination anti-patterns in GitLab merge request diffs.
+Your primary purpose is to detect coordination anti-patterns in GitLab merge request diffs.
+You also report implementation drift: cases where the PR description states a specific
+behavior (a timeout value, retry count, error message, or constant) that does not match
+the actual code in the diff. Use rule_id "IMPL_DRIFT" for these findings.
 
 You have three tools available:
 - `semantic_code_search`: Search the project for code snippets related to a query.
@@ -105,14 +108,29 @@ def build_review_prompt(
 Project: {project_id}
 MR: !{mr_iid}
 
-Rules to check (pre-filtered by surface detector):
+## Step 0 — Mandatory pre-flight (do this before checking any rules)
+Call `get_merge_request` first. Read the PR title and description carefully.
+Extract any explicit claims about behavior: timeouts, retry counts, budget sizes, error messages,
+constant values (e.g. "extends timeout to 30 s", "uses 1 s per-attempt dial").
+After you have read the code in the diff, verify each claim:
+- Do the actual constants, error strings, and logic match what the description states?
+- If a constant or behavior contradicts the description, note it as an IMPLEMENTATION_DRIFT
+  finding at MEDIUM severity with confidence 90, rule_id "IMPL_DRIFT", and explain the mismatch.
+
+## Rules to check (pre-filtered by surface detector)
 {rule_block}
 
 <untrusted_diff>
 {diff}
 </untrusted_diff>
 
-Use `semantic_code_search` to investigate each rule. Focus your searches on:
+## Investigation guidance
+1. Call `get_merge_request` first (Step 0 above).
+2. For each rule, run 1–3 `semantic_code_search` queries.
+3. For any rule whose surface is in a function body (not just a single line), call
+   `get_file_contents` to read the full function — the diff alone shows what changed,
+   not what surrounds it.
+4. Focus searches on:
 {chr(10).join(f'  [{r.id}] {", ".join(r.search_query_templates[:2])}' for r in triggered_rules)}
 
 After investigation, output your findings as JSON.

@@ -97,6 +97,6 @@ class TestSurfaceDetector:
         assert "RULE_10" in ids
 
     def test_registry_fully_loaded(self):
-        assert len(REGISTRY) == 10
-        expected_ids = {f"RULE_{i:02d}" for i in range(1, 11)}
+        assert len(REGISTRY) == 11
+        expected_ids = {f"RULE_{i:02d}" for i in range(1, 12)}
         assert set(REGISTRY.keys()) == expected_ids
