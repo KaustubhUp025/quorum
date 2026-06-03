@@ -181,6 +181,8 @@ async def _async_review(
     # SARIF output — write to stdout, skip the rich table
     if output_format == "sarif":
         from quorum.sarif import format_sarif
+        from quorum.audit_log import append_entry
+        append_entry(result, platform=platform, comment_posted=post_comment and not dry_run)
         click.echo(format_sarif(result))
         if result.blocked:
             sys.exit(1)
@@ -210,6 +212,10 @@ async def _async_review(
 
     _out.print(table)
 
+    # Append to audit log regardless of outcome
+    from quorum.audit_log import append_entry
+    append_entry(result, platform=platform, comment_posted=post_comment and not dry_run)
+
     if result.blocked:
         _out.print("\n[bold red]⛔  CRITICAL findings found — pipeline blocked.[/bold red]")
         sys.exit(1)
@@ -234,6 +240,24 @@ def list_rules_cmd() -> None:
         table.add_row(rule.id, rule.name, rule.reference)
 
     console.print(table)
+
+
+@main.command("history")
+@click.option("--last", "-n", default=None, type=int, metavar="N", help="Show only the last N runs")
+@click.option("--repo", default=None, help="Filter by repo name (partial match)")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output raw JSON for scripting")
+def history_cmd(last: int | None, repo: str | None, as_json: bool) -> None:
+    """Show the audit log of all past review runs with a severity breakdown."""
+    import json as _json
+    from quorum.audit_log import load_entries, render_history
+
+    entries = load_entries()
+
+    if as_json:
+        click.echo(_json.dumps([e.model_dump() for e in entries], indent=2))
+        return
+
+    render_history(entries, last_n=last, repo_filter=repo)
 
 
 @main.command("serve")

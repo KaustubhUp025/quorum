@@ -450,12 +450,78 @@ See [SECURITY.md](SECURITY.md) for the full disclosure policy.
 
 ---
 
+## Audit log
+
+Every `quorum review` run is appended to `~/.quorum/audit_log.json`.  
+Override the path with `QUORUM_AUDIT_LOG=/path/to/log.json`.
+
+```bash
+quorum history              # all runs, most-recent first
+quorum history --last 5     # last 5 runs
+quorum history --repo vllm  # filter by repo name (partial match)
+quorum history --json       # raw JSON for scripting / dashboards
+```
+
+Sample output:
+
+```
+╭──────────────────────────────────────────────────────────────────╮
+│                       Quorum Audit Log                           │
+│  8 reviews  ·  12 findings  ·  🔴 5 critical  🟠 4 high  🟢 3   │
+╰──────────────────────────────────────────────────────────────────╯
+
+  Findings by severity
+  ────────────────────────────────────────────────
+  🔴 CRITICAL  ████████████████████░░░░   5  (42%)
+  🟠 HIGH      ████████████████░░░░░░░░   4  (33%)
+  🟡 MEDIUM    ████░░░░░░░░░░░░░░░░░░░░   1  ( 8%)
+  🟢 PASS      ████████████░░░░░░░░░░░░   3  (25%)
+
+  Reviews  (showing 8 of 8)
+  ┌────┬────────────┬──────────┬──────────────────────────┬───────┬───┬───┬─────────┬─────────────┐
+  │  # │ Date       │ Platform │ Repo                     │ PR/MR │ 🔴│ 🟠│ Blocked │ Issue/Fix   │
+  ├────┼────────────┼──────────┼──────────────────────────┼───────┼───┼───┼─────────┼─────────────┤
+  │  8 │ 2026-06-01 │ github   │ vllm-project/vllm        │ #34981│ 0 │ 1 │   —     │ Issue #44245│
+  │  7 │ 2026-06-01 │ gitlab   │ rjackson-education/...   │  !19  │ 0 │ 1 │   —     │ —           │
+  │  4 │ 2026-05-31 │ github   │ aio-libs/aiokafka        │ #1164 │ 0 │ 1 │   —     │ Issue #1165 │
+  └────┴────────────┴──────────┴──────────────────────────┴───────┴───┴───┴─────────┴─────────────┘
+```
+
+The `--json` flag outputs the raw JSON array, making it easy to pipe into `jq` or import into a dashboard.
+
+---
+
+## Roadmap
+
+The following features are planned for future releases. Community contributions are welcome — see [CONTRIBUTING.md](docs/CONTRIBUTING.md).
+
+### Conversation follow-up (close-the-loop)
+
+When Quorum files an issue or posts a review comment, the issue URL is stored in the audit log. A planned `quorum follow-up` command will:
+
+1. Check every open issue Quorum has filed — has the maintainer pushed a fix?
+2. Re-run the surface detector on the updated file at the commit that closed the issue.
+3. If the pattern is no longer present, post one final confirmation comment: *"Fixed in `<sha>` — confirmed by Quorum."*
+
+This turns Quorum from a one-shot reviewer into a persistent collaborator that closes the loop without human intervention.
+
+### Per-user multi-tenant tracking
+
+For organisations deploying Quorum as a shared service (GitHub App / GitLab App):
+
+- **OAuth login** — Quorum acts on each user's behalf using their own token; no shared PAT.
+- **Per-org dashboard** — repos reviewed, findings by rule and severity, fix-acceptance rate over time.
+- **Persistent backend** — Firestore or PostgreSQL stores findings across deployments, enabling trend analysis and regression detection.
+- **Automated resolution tracking** — webhook subscription on issues automatically marks a Quorum finding as resolved when the filed issue is closed.
+
+---
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 
-pytest                     # run all 138 tests
+pytest                     # run all 144 tests
 ruff check src/ tests/     # lint
 mypy src/                  # type check
 ```
