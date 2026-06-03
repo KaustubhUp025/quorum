@@ -18,15 +18,17 @@ Quorum reviews merge requests for coordination anti-patterns that static linters
 
 Quorum has found real coordination bugs in real open-source projects across GitHub and GitLab, filed as public issues:
 
-| Project | Platform | Bug found | Rule | Issue |
-|---|---|---|---|---|
-| `vllm-project/vllm` | GitHub | `_load_lora_config` retries with `interval *= 2` — no jitter, thundering herd when multiple workers load same LoRA adapter | RULE_06 | [#44245](https://github.com/vllm-project/vllm/issues/44245) |
-| `aio-libs/aiokafka` | GitHub | Fixed retry backoff uses `retry_backoff_ms` with no jitter — thundering herd under leader election | RULE_06 | [#1165](https://github.com/aio-libs/aiokafka/issues/1165) |
-| `thelabnyc/django-logpipe` | GitLab | `ProvisionedThroughputExceededException` retry uses fixed `time.sleep(5)` — all consumers wake simultaneously under Kinesis throttling | RULE_06 | [#15](https://gitlab.com/thelabnyc/django-logpipe/-/work_items/15) |
-| `Alexandre_Toto/architecture-event-driven-cdc` | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 + RULE_10 | [#1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
-| `lhyou/fastapi-test` | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 | [#1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
+| Project | Language | Platform | Bug found | Rule | Reference |
+|---|---|---|---|---|---|
+| `atlanhq/atlas-metastore` | Java | GitHub | `AsyncIngestionConsumerService` writes to JanusGraph then publishes to Kafka with no outbox — phantom events / lost writes on failure. `calculateExponentialBackoff()` uses pure `delay * 2.0` multiplier, no jitter | RULE_09 🔴 + RULE_06 🟠 | [PR #6699 review](https://github.com/atlanhq/atlas-metastore/pull/6699) |
+| `containerd/nerdbox` | Go | GitHub | `waitForShimPipe` retries with fixed `time.Sleep(retryDelay)` — all shims sleep for exactly the same duration and retry simultaneously on Windows pipe failures | RULE_06 🟠 | [Issue #219](https://github.com/containerd/nerdbox/issues/219) |
+| `vllm-project/vllm` | Python | GitHub | `_load_lora_config` retries with `interval *= 2` — no jitter, thundering herd when multiple workers load same LoRA adapter | RULE_06 🟠 | [Issue #44245](https://github.com/vllm-project/vllm/issues/44245) |
+| `aio-libs/aiokafka` | Python | GitHub | Fixed retry backoff uses `retry_backoff_ms` with no jitter — thundering herd under leader election | RULE_06 🟠 | [Issue #1165](https://github.com/aio-libs/aiokafka/issues/1165) |
+| `thelabnyc/django-logpipe` | Python | GitLab | `ProvisionedThroughputExceededException` retry uses fixed `time.sleep(5)` — all consumers wake simultaneously under Kinesis throttling | RULE_06 🟠 | [Issue #15](https://gitlab.com/thelabnyc/django-logpipe/-/work_items/15) |
+| `Alexandre_Toto/architecture-event-driven-cdc` | Python | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 🔴 + RULE_10 🔴 | [Issue #1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
+| `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
 
-**6 independent projects · 2 platforms · zero false positives across all 9 runs.**
+**7 independent projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
 
 ---
 
