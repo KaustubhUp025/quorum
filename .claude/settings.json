@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport subprocess, json, sys\nresult = subprocess.run(['git', '-C', '.', 'log', '--oneline', '-3'], capture_output=True, text=True)\nrecent = result.stdout.strip()\n# Check if .context files were updated recently\nctx = subprocess.run(['git', '-C', '.', 'status', '--short', '.context/'], capture_output=True, text=True)\nhas_changes = bool(ctx.stdout.strip())\nmsg = ''\nif has_changes:\n    msg = '📝 .context/ has uncommitted changes — consider /sync-context to document recent work'\nelse:\n    msg = '✅ .context/ is up to date'\nprint(json.dumps({'systemMessage': msg}))\n\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport sys, json\ntool_input = json.load(sys.stdin) if not sys.stdin.isatty() else {}\ncmd = tool_input.get('tool_input', {}).get('command', '') if isinstance(tool_input, dict) else ''\nif 'pytest' in cmd and ('passed' in cmd or '-q' in cmd):\n    print(json.dumps({'systemMessage': '🧪 Tests ran — if a new feature was just validated, use /validate-feature <name> to update .context/ files'}))\n\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "customCommands": {
+    "sync-context": ".claude/commands/sync-context.md",
+    "validate-feature": ".claude/commands/validate-feature.md"
+  }
+}
