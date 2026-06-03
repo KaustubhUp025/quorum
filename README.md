@@ -110,6 +110,23 @@ Quorum ships with 10 named rules. Each is a standalone Python module — adding 
 
 ---
 
+## Language support
+
+The surface detector fires on coordination patterns across **6 languages**. Gemini's reasoning is language-agnostic for all of them.
+
+| Language | Detected patterns |
+|---|---|
+| **Python** | All 10 rules — redis-py, kafka-python, aiokafka, SQLAlchemy, Temporal, Saga |
+| **Java** | RULE_03 (Axon Saga), RULE_06 (Thread.sleep), RULE_08 (KafkaConsumer), RULE_09 (JPA/Hibernate), RULE_10 (@Version) |
+| **Go** | RULE_01 (go-redis SetNX), RULE_03 (Temporal workflow.ExecuteActivity), RULE_06 (time.Sleep), RULE_08 (sarama AutoCommit, kafka-go CommitInterval≠0), RULE_09 (GORM), RULE_10 (row.Scan) |
+| **JavaScript / TypeScript** | RULE_01 (ioredis NX), RULE_03 (NestJS @Saga), RULE_06 (setTimeout), RULE_08 (kafkajs autoCommit), RULE_09 (TypeORM repository.save), RULE_10 (findById/findOne) |
+| **Ruby** | RULE_01 (redis.setnx), RULE_06 (sleep), RULE_08 (karafka), RULE_10 (find/find_by) |
+| **Rust / .NET** | RULE_06 (tokio::time::sleep / Task.Delay), RULE_01 (LockTake/StringSet), RULE_08 (Confluent .NET), RULE_09 (SaveChangesAsync) |
+
+Real-world validated: Python (5 projects), Java (1 project), Go (1 project).
+
+---
+
 ## Example output
 
 ```
@@ -344,6 +361,26 @@ QUORUM_LLM_BACKEND=ollama/mistral \
   quorum review --project-id myorg/myrepo --mr-iid 42 --dry-run
 ```
 
+**File issues for findings in a review:**
+
+```bash
+# Preview what would be filed (no API calls)
+quorum file-issue --platform github --project-id owner/repo --mr-iid 42 --dry-run
+
+# File issues for all HIGH+ findings (issues disabled → opens draft fix PR instead)
+quorum file-issue --platform github --project-id owner/repo --mr-iid 42
+
+# Only CRITICAL findings
+quorum file-issue --project-id myorg/myrepo --mr-iid 42 --min-severity CRITICAL
+```
+
+Reads the audit log for the given MR, then for each qualifying finding:
+1. Opens an issue in the target repo (if issues are enabled).
+2. If issues are disabled (e.g. enterprise repos using Jira), opens a draft fix PR with the finding body instead.
+3. If both fail, logs a structured warning with the finding text for manual filing.
+
+Enable automatic issue filing after every review with `QUORUM_AUTO_FILE_ISSUES=true`.
+
 **List all rules:**
 
 ```bash
@@ -420,6 +457,10 @@ All settings use the `QUORUM_` prefix (e.g. `QUORUM_GITLAB_TOKEN`).
 | `QUORUM_CREATE_FIX_MRS` | `false` | Auto-open draft fix MRs for CRITICAL findings |
 | `QUORUM_FIX_MR_MAX_COUNT` | `1` | Max fix MRs opened per review |
 | `QUORUM_CORRELATE_CI` | `false` | Check failing CI pipeline and correlate with findings |
+| `QUORUM_WEBHOOK_SECRET` | — | HMAC secret for validating incoming GitLab/GitHub webhooks |
+| `QUORUM_AUTO_FILE_ISSUES` | `false` | Auto-file issues after every `quorum review` (opt-in) |
+| `QUORUM_AUTO_FILE_ISSUES_MIN_SEVERITY` | `HIGH` | Minimum severity to auto-file: `CRITICAL`, `HIGH`, or `MEDIUM` |
+| `QUORUM_AUDIT_LOG` | `~/.quorum/audit_log.json` | Path to the persistent audit log |
 | `QUORUM_PORT` | `8080` | Port for Cloud Run webhook server |
 | `QUORUM_LOG_LEVEL` | `INFO` | Log level |
 
@@ -524,7 +565,7 @@ For organisations deploying Quorum as a shared service (GitHub App / GitLab App)
 ```bash
 pip install -e ".[dev]"
 
-pytest                     # run all 144 tests
+pytest                     # run all 151 tests
 ruff check src/ tests/     # lint
 mypy src/                  # type check
 ```
