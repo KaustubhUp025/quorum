@@ -15,21 +15,49 @@ RULE = Rule(
     reference="Kleppmann (2016) — How to do distributed locking",
     reference_url="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html",
     surface_keywords=[
-        "setnx", "set nx", "set_nx", "redlock", "acquire_lock", "acquire lock",
-        "trylock", "try_lock", "tryacquire", "reentrantlock",
-        "nx=true", "nx=True", ", nx=", '"NX"', "'NX'",
+        # Redis commands (all languages)
+        "setnx", "set nx", "set_nx", "redlock",
+        '"NX"', "'NX'", ", nx=", "nx=true", "nx=True",
+        # Java / Kotlin
+        "acquire_lock", "acquire lock", "trylock", "try_lock",
+        "tryacquire", "reentrantlock",
+        # Go (go-redis, redigo)
+        "setnx(", "setnxex(", "client.set(", "rdb.set(",
+        "lock.obtain", "redsync",
+        # JavaScript / TypeScript (ioredis, node-redis)
+        "redlock", "resource.acquire", "lock.acquire",
+        # Ruby (redis-rb, redlock-rb)
+        "redis.setnx", "redis.set",
+        # .NET (StackExchange.Redis)
+        "stringset(", "locktake(",
+        # Zookeeper / etcd patterns
+        "createephemeral", "trylock", "campaign(",
     ],
     surface_patterns=[
-        # Java/Go style: SET "key" "locked" NX
+        # Redis CLI / any language: SET key "locked" NX
         r'SET\s+\S+\s+["\'](?:locked|1|true|acquired)["\']',
-        # Java method call: redisClient.SET("key", "locked", "NX", ...)
-        r'\.SET\s*\([^)]*["\'](?:locked|1|true|acquired)["\']',
-        r'setNX\s*\(',
-        r'setnx\s*\(',
         r'SET\s+.*\bNX\b',
+        # Java/Go: .SET("key", "locked", ...) or setNX(key, value)
+        r'\.SET\s*\([^)]*["\'](?:locked|1|true|acquired)["\']',
+        r'[Ss]et[Nn][Xx]\s*\(',
         # Python redis-py: client.set(key, "locked", nx=True)
         r'\.set\s*\([^)]*\bnx\s*=\s*True',
+        # Go go-redis: client.SetNX(ctx, key, "locked", ttl)
+        r'\.SetNX\s*\(',
+        # Go: client.Set(ctx, key, "locked", 0) — static value
+        r'\.Set\s*\(ctx,\s*\w+,\s*["\'](?:locked|1|true|acquired)["\']',
+        # JavaScript/TS ioredis: redis.set(key, 'LOCKED', 'NX') or {NX: true}
+        r"""[cC]lient\.set\s*\([^,]+,\s*['"][^'"]{1,20}['"],\s*['"]NX['"]""",
+        r"""\.set\s*\([^)]*\{\s*[Nn][Xx]\s*:\s*true""",
+        # Ruby: redis.set(key, 'locked', nx: true)
+        r"""redis\.set\s*\([^)]*nx:\s*true""",
+        # .NET StackExchange.Redis: db.StringSet(key, "locked", when: When.NotExists)
+        r'StringSet\s*\([^)]*When\.NotExists',
+        r'LockTake\s*\(',
+        # Redlock (multi-language library)
         r'Redlock\s*\(',
+        r'redlock\s*\.',
+        # Generic acquire (catch-all, safe with lock keyword above)
         r'acquire\s*\(',
     ],
     search_query_templates=[

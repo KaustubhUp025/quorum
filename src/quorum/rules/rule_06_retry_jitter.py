@@ -16,25 +16,51 @@ RULE = Rule(
     reference="AWS Architecture Blog — Exponential Backoff and Jitter (Marc Brooker)",
     reference_url="https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/",
     surface_keywords=[
-        "retry", "retries", "thread.sleep", "time.sleep", "asyncio.sleep",
-        "backoff", "wait", "attempt", "maxretries", "max_retries",
+        # Python
+        "retry", "retries", "time.sleep", "asyncio.sleep",
+        # Java / Kotlin
+        "thread.sleep", "backoff", "maxretries", "max_retries",
+        # Go
+        "time.sleep", "time.after", "time.newticker",
+        # JavaScript / TypeScript
+        "settimeout", "setinterval", "await sleep", "delaypromise",
+        # Ruby
+        "kernel.sleep",
+        # Rust
+        "tokio::time::sleep", "thread::sleep", "std::thread::sleep",
+        # .NET / C#
+        "task.delay", "thread.sleep",
+        # Language-agnostic signals
+        "wait", "attempt", "backoff", "exponential",
     ],
     surface_patterns=[
-        # Java-style deterministic sleep
-        r'Thread\.sleep\s*\(\s*\w+\s*\*',
-        # Python time.sleep with a literal or simple multiply: sleep(5), sleep(x*2)
-        r'time\.sleep\s*\(\s*(?:\d+|\w+\s*\*\s*\d+)\s*\)',
-        # asyncio.sleep with a literal or simple multiply
-        r'asyncio\.sleep\s*\(\s*(?:\d+|\w+\s*\*\s*\d+)\s*\)',
-        # Any time.sleep with a variable or expression — broad but safe combined
-        # with retry/backoff keywords above (catches: sleep(delay), sleep(min(...)))
+        # Java/Kotlin: Thread.sleep(n * 1000) or Thread.sleep(delay)
+        r'Thread\.sleep\s*\(',
+        # Python: time.sleep(5), time.sleep(x*2), time.sleep(variable)
         r'time\.sleep\s*\([^\)\n]{1,80}\)',
-        # Exponential doubling patterns: interval *= 2, BASE_DELAY ** retry_count
+        # Python asyncio
+        r'asyncio\.sleep\s*\([^\)\n]{1,80}\)',
+        # Go: time.Sleep(5 * time.Second) or time.Sleep(backoff)
+        r'time\.Sleep\s*\(',
+        r'time\.After\s*\(',
+        # JavaScript/TypeScript: setTimeout(fn, 1000), await new Promise(resolve => setTimeout(...))
+        r'setTimeout\s*\([^,]+,\s*\d',
+        r'setTimeout\s*\([^,]+,\s*\w',
+        r'await\s+new\s+Promise[^;]{0,60}setTimeout',
+        # Ruby: sleep 5, sleep(5), sleep(retry_count * 2)
+        r'\bsleep\s+\d+\b',
+        r'\bsleep\s*\(\s*(?:\d+|\w)',
+        # Rust: tokio::time::sleep(Duration::from_secs(5))
+        r'tokio::time::sleep\s*\(',
+        r'thread::sleep\s*\(',
+        # .NET: Thread.Sleep(5000), await Task.Delay(5000)
+        r'Task\.Delay\s*\(',
+        # Exponential doubling (all languages): interval *= 2, backoff ** attempt
         r'\w+\s*\*=\s*2\b',
         r'\*\*\s*(?:retry_count|attempt|retries|retry|n_retries|num_retries)\b',
-        r'for\s+\w+\s+in\s+range.*retry',
         r'attempt\s*\*\s*\d+',
         r'2\s*\*\*\s*attempt',
+        r'for\s+\w+\s+in\s+range.*retry',
     ],
     search_query_templates=[
         "retry backoff calculation with random jitter",

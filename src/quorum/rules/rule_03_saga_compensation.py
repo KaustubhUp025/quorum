@@ -15,17 +15,44 @@ RULE = Rule(
     reference="microservices.io — Saga pattern",
     reference_url="https://microservices.io/patterns/data/saga.html",
     surface_keywords=[
-        "saga", "orchestrator", "step(", ".step(", "addstep",
-        "choreography", "compensat", "rollback", "sagastep",
+        # Language-agnostic framework and concept keywords
+        "saga", "orchestrator", "choreography", "compensat", "sagastep",
         "sagaorchestrator", "eventuate", "temporal", "camunda",
+        # Step / rollback signals
+        "step(", ".step(", "addstep", "rollback",
+        # Java / Kotlin Spring (most common)
+        "@saga", "sagamanager", "sagatype",
+        # Go (conductor, Temporal Go SDK)
+        "workflow.ExecuteActivity", "workflow.Go",
+        "saga.NewSaga", "activity.Execute",
+        # JavaScript / TypeScript (NestJS CQRS, Moleculer sagas)
+        "SagaBuilder", "startWith(", "compensation(",
+        # Python (Temporal Python SDK, Prefect)
+        "workflow.execute_activity", "@workflow.defn",
+        # .NET (MassTransit, NServiceBus)
+        "SagaStateMachine", "ISaga", "CorrelatedBy",
     ],
     surface_patterns=[
+        # Generic OO: saga.step(...)
         r'saga\w*\.step\s*\(',
+        # Java: @Saga, @SagaEventHandler
         r'@\w*Saga\b',
         r'SagaStep\s*\(',
         r'orchestrator\.add\w*\(',
         r'\.compensate\s*\(',
         r'on\w+Failed\s*\(',
+        # Temporal (Go / Java / Python / TypeScript)
+        r'workflow\.ExecuteActivity\s*\(',
+        r'workflow\.execute_activity\s*\(',
+        r'workflow\.executeActivity\s*\(',
+        # Go: saga.NewSaga() or conductor saga patterns
+        r'saga\.New\w*\s*\(',
+        # JavaScript/TypeScript NestJS: @Saga() decorator
+        r'@Saga\s*\(\s*\)',
+        r'SagaBuilder\s*\.',
+        # .NET MassTransit
+        r'ISaga\b',
+        r'SagaStateMachine\b',
     ],
     search_query_templates=[
         "compensation handler rollback for saga step",

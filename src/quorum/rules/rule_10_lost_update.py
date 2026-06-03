@@ -16,28 +16,51 @@ RULE = Rule(
     reference="Kleppmann — Designing Data-Intensive Applications §7",
     reference_url="https://dataintensive.net/",
     surface_keywords=[
-        # Specific read-then-compute signals (generic SELECT excluded — too broad)
+        # Python SQLAlchemy / raw psycopg2
         "fetchone", "fetchall", "find_one", "find_by",
         "get_balance", "get_count", "get_quantity", "get_stock",
         "set_balance", "set_quantity", "set_stock",
-        # Mutable numeric fields — presence implies read-modify-write context
+        # Go (database/sql, GORM, sqlx)
+        "QueryRow(", "db.Get(", "tx.Get(", "row.Scan(",
+        "db.First(", "db.Find(", "gorm.First",
+        # JavaScript / TypeScript (TypeORM, Mongoose, Prisma)
+        "findById(", "findOne(", "findOneAndUpdate(",
+        "prisma.findUnique(", "prisma.findFirst(",
+        # Java / Kotlin (JPA, Hibernate, JDBC)
+        "entitymanager.find(", "getById(", "findById(",
+        "jpatemplate.queryforobject",
+        # Ruby (ActiveRecord)
+        "find_by(", ".find(",
+        # Mutable numeric fields (all languages — clearest lost-update signal)
         "balance", "quantity", "stock",
-        # Optimistic / pessimistic lock signals
+        # Concurrency guards — presence of these means code is CORRECT; used by Gemini to PASS
         "for update", "FOR UPDATE", "with (updlock)", "WITH (UPDLOCK)",
         "@Version", "row_version", "optimistic", "compare_and_swap",
+        "rowversion", "etag", "concurrencytoken",
     ],
     surface_patterns=[
-        # ORM row fetch + write (fetchone is the specific signal, not bare SELECT)
+        # Python: fetchone() or find_by/get_by_id
         r'\.fetchone\s*\(\s*\)',
         r'(?:find_by|find_one|get_by_id|query\.get)\s*\(',
-        # Balance/counter arithmetic — the clearest lost-update signal
+        # Balance/counter arithmetic — clearest lost-update signal in any language
         r'(?:balance|quantity|stock)\s*[+\-*/]=',
         r'(?:get_balance|get_count|get_quantity)\s*\(',
-        # Pessimistic lock (fires on safe code too — Gemini resolves)
+        # SQL guards (correct code — Gemini will PASS, fires anyway to let it verify)
         r'\bFOR\s+UPDATE\b',
         r'\bWITH\s*\(\s*UPDLOCK\s*\)',
         # SQL UPDATE on a numeric field
         r'UPDATE\b.*\bSET\b.*(?:balance|quantity|stock|count)\b',
+        # Go: row.Scan(&balance) or db.Get(&entity)
+        r'row\.Scan\s*\(',
+        r'(?:db|tx)\.(?:Get|First|QueryRow)\s*\(',
+        # JavaScript: Model.findById() or repository.findOne()
+        r'(?:findById|findOne|findUnique|findFirst)\s*\(',
+        # Java JPA: entityManager.find() or @Version annotation
+        r'entityManager\.find\s*\(',
+        r'@Version\b',
+        r'OptimisticLock(?:ing|Exception)',
+        # Ruby ActiveRecord: User.find(id)
+        r'\b(?:find|find_by)\s*\(',
     ],
     search_query_templates=[
         "FOR UPDATE pessimistic lock on this table or entity",

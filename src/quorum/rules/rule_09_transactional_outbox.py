@@ -15,24 +15,41 @@ RULE = Rule(
     reference="microservices.io — Transactional Outbox pattern",
     reference_url="https://microservices.io/patterns/data-management/transactional-outbox.html",
     surface_keywords=[
-        # DB write signals
+        # DB write signals — Python SQLAlchemy / generic ORM
         "session.add", "repo.save", "repository.save", ".save(", "db.add(",
         "session.commit", ".flush(", "bulk_save", "insert_one(", "insertone",
-        # Event publish signals
+        # DB write signals — Go (database/sql, GORM, sqlx)
+        "db.exec(", "tx.exec(", "db.create(", "tx.create(",
+        "db.save(", "gorm.create", "sqlx.namedexec",
+        # DB write signals — JavaScript / TypeScript (TypeORM, Prisma, Mongoose)
+        "repository.save(", "await save(", "prisma.create",
+        "model.create(", "findoneandupdate(",
+        # DB write signals — Java / Kotlin (JPA, JDBC)
+        "entitymanager", "jparepo", "save(", ".persist(",
+        # Event publish signals (all languages)
         "publish(", "emit(", "produce(", "send_event(", "dispatch(",
         "eventbus", "event_bus", "messagebus", "message_bus",
         "publisher.publish", "producer.send", "channel.send",
-        # CDC / outbox signals — presence of these in the same file is OK
+        "producer.produce(", "writer.writemessages(",   # Go confluent / kafka-go
+        "eventemitter.emit", "rabbitmq.publish",
+        # CDC / outbox signals — presence of these is a GOOD sign (correct implementation)
         "outbox", "cdc", "debezium", "change_data_capture",
     ],
     surface_patterns=[
-        # Both a save/commit AND a publish/emit appear in the same diff hunk
-        r'(?:session\.add|repo\.save|\.save\s*\(|db\.add\s*\()',
+        # Python: session.add(...) / session.commit() + producer.send(...)
+        r'session\.(?:add|commit)\s*\(',
         r'(?:publish|emit|produce|dispatch)\s*\(',
+        # Java / Kotlin Spring
         r'(?:eventPublisher|eventBus|messageBus|producer)\.(?:publish|send|emit)\s*\(',
-        r'@Transactional\b.*\n(?:.*\n){0,20}.*\.publish\s*\(',
-        # Python: session.add(...) ... session.commit() ... producer.send(...)
-        r'session\.commit\s*\(\s*\).*\n(?:.*\n){0,10}.*\.send\s*\(',
+        r'@Transactional\b',
+        # Go: db.Exec / tx.Exec or db.Create (GORM)
+        r'(?:db|tx)\.(?:Exec|ExecContext|NamedExec|Create|Save)\s*\(',
+        # Go: producer.Produce / writer.WriteMessages
+        r'(?:producer|writer)\.(?:Produce|WriteMessages|Send)\s*\(',
+        # JavaScript/TypeScript: await repository.save() or prisma.create()
+        r'await\s+\w+\.(?:save|create|findOneAndUpdate)\s*\(',
+        # .NET: context.SaveChanges() + publisher
+        r'SaveChanges(?:Async)?\s*\(',
     ],
     search_query_templates=[
         "outbox table insert for event relay",
