@@ -212,9 +212,34 @@ async def _async_review(
 
     _out.print(table)
 
+    # Auto-file issues when enabled and there are HIGH+ findings
+    filed_issue_url: str | None = None
+    if settings.auto_file_issues and not dry_run and result.findings:
+        from quorum.issue_filer import file_finding_issue
+        filing_results = await file_finding_issue(
+            client, result,
+            platform=platform,
+            min_severity=settings.auto_file_issues_min_severity,
+        )
+        for fr in filing_results:
+            if fr.url:
+                filed_issue_url = fr.url
+                method_label = "issue" if fr.method == "issue" else "draft fix PR"
+                _out.print(f"[cyan]  → Filed {method_label}: {fr.url}[/cyan]")
+            elif fr.method == "manual":
+                _out.print(
+                    f"[yellow]  ⚠  Could not file issue for {fr.blocked_reason or 'unknown reason'}. "
+                    f"Use `quorum file-issue` to retry or file manually.[/yellow]"
+                )
+
     # Append to audit log regardless of outcome
     from quorum.audit_log import append_entry
-    append_entry(result, platform=platform, comment_posted=post_comment and not dry_run)
+    append_entry(
+        result,
+        platform=platform,
+        comment_posted=post_comment and not dry_run,
+        issue_filed=filed_issue_url,
+    )
 
     if result.blocked:
         _out.print("\n[bold red]⛔  CRITICAL findings found — pipeline blocked.[/bold red]")
@@ -258,6 +283,158 @@ def history_cmd(last: int | None, repo: str | None, as_json: bool) -> None:
         return
 
     render_history(entries, last_n=last, repo_filter=repo)
+
+
+@main.command("file-issue")
+@click.option("--project-id", "-p", required=True, help="Project path (owner/repo or group/project)")
+@click.option("--mr-iid", "-m", required=True, type=int, help="MR / PR number that was reviewed")
+@click.option(
+    "--platform", default=None,
+    type=click.Choice(["gitlab", "github"], case_sensitive=False),
+    help="Platform (default: gitlab). Overrides QUORUM_PLATFORM.",
+)
+@click.option(
+    "--min-severity", default="HIGH",
+    type=click.Choice(["CRITICAL", "HIGH", "MEDIUM"], case_sensitive=True),
+    help="Minimum severity to file an issue for (default: HIGH).",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be filed without creating anything")
+def file_issue_cmd(
+    project_id: str,
+    mr_iid: int,
+    platform: str | None,
+    min_severity: str,
+    dry_run: bool,
+) -> None:
+    """File GitHub/GitLab issues for findings from a previous review.
+
+    Reads the audit log to find the most recent review of PROJECT_ID / MR_IID,
+    then files issues (or a draft fix PR if issues are disabled) for each
+    finding at or above MIN_SEVERITY.
+
+    \b
+    Examples:
+      quorum file-issue -p atlanhq/atlas-metastore -m 6699 --platform github
+      quorum file-issue -p myorg/myrepo -m 42 --min-severity CRITICAL --dry-run
+    """
+    settings = get_settings()
+    _configure_logging(settings.log_level)
+
+    effective_platform = platform or getattr(settings, "platform", "gitlab") or "gitlab"
+
+    import asyncio
+    asyncio.run(_async_file_issue(
+        project_id=project_id,
+        mr_iid=mr_iid,
+        platform=effective_platform,
+        min_severity=min_severity,
+        dry_run=dry_run,
+        settings=settings,
+    ))
+
+
+async def _async_file_issue(
+    project_id: str,
+    mr_iid: int,
+    platform: str,
+    min_severity: str,
+    dry_run: bool,
+    settings,
+) -> None:
+    from quorum.audit_log import load_entries
+    from quorum.issue_filer import file_finding_issue, _build_issue_title, _build_issue_body
+    from quorum.github_client import make_github_client
+    from quorum.gitlab_client import make_client
+    from quorum.models import ReviewResult, Finding, Severity
+
+    # Find the most recent matching audit entry
+    entries = load_entries()
+    matching = [
+        e for e in reversed(entries)
+        if e.repo == project_id and e.pr == mr_iid
+    ]
+    if not matching:
+        console.print(f"[red]No audit log entry found for {project_id} MR/PR #{mr_iid}.[/red]")
+        console.print("[dim]Run `quorum review` first, then `quorum file-issue`.[/dim]")
+        return
+
+    entry = matching[0]
+
+    # Reconstruct minimal ReviewResult-like object from audit entry
+    _SEV = {s.value: s for s in Severity}
+    findings = [
+        Finding(
+            rule_id=f.rule,
+            rule_name=f.rule,
+            severity=_SEV.get(f.severity, Severity.HIGH),
+            confidence=f.confidence,
+            title=f.title,
+            explanation=f.title,
+            file_path=f.file_path,
+        )
+        for f in entry.findings
+    ]
+    result = ReviewResult(
+        mr_iid=mr_iid,
+        project_id=project_id,
+        findings=findings,
+        blocked=entry.blocked,
+    )
+
+    if dry_run:
+        console.print(f"[bold cyan]DRY RUN — would file issues for {project_id} MR/PR #{mr_iid}[/bold cyan]")
+        _SEVERITY_ORDER = [s.value for s in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.PASS]]
+        threshold_idx = _SEVERITY_ORDER.index(min_severity) if min_severity in _SEVERITY_ORDER else 1
+        eligible = [f for f in findings if f.severity != Severity.PASS and _SEVERITY_ORDER.index(f.severity.value) <= threshold_idx]
+        if not eligible:
+            console.print(f"[yellow]No findings at or above {min_severity} severity.[/yellow]")
+            return
+        for f in eligible:
+            title = _build_issue_title(f, project_id)
+            console.print(f"\n  [bold]Title:[/bold] {title}")
+            console.print(f"  [bold]Severity:[/bold] {f.severity.emoji} {f.severity.value}")
+        return
+
+    # Connect and file
+    if platform == "github":
+        client = make_github_client(settings)
+    else:
+        client = make_client(settings, rest_only=True)
+
+    async with client.connect():
+        # Check repo metadata first
+        try:
+            meta = await client.check_repo_metadata(project_id)
+            has_issues = meta.get("has_issues", True)
+            console.print(
+                f"[{'green' if has_issues else 'yellow'}]"
+                f"Repo metadata: issues_enabled={has_issues}, "
+                f"visibility={meta.get('visibility', '?')}"
+                f"[/{'green' if has_issues else 'yellow'}]"
+            )
+        except AttributeError:
+            console.print("[dim]Client does not support check_repo_metadata — proceeding anyway[/dim]")
+
+        filing_results = await file_finding_issue(
+            client, result,
+            platform=platform,
+            min_severity=min_severity,
+        )
+
+    if not filing_results:
+        console.print(f"[yellow]No eligible findings at {min_severity}+ to file.[/yellow]")
+        return
+
+    for i, fr in enumerate(filing_results, 1):
+        if fr.method == "issue":
+            console.print(f"[green]✅  Issue #{fr.issue_number} filed: {fr.url}[/green]")
+        elif fr.method == "fix_pr":
+            console.print(f"[cyan]✅  Draft fix PR created (issues disabled): {fr.url}[/cyan]")
+        else:
+            console.print(
+                f"[red]❌  Could not file automatically ({fr.blocked_reason}). "
+                f"File manually in the project's external tracker.[/red]"
+            )
 
 
 @main.command("serve")

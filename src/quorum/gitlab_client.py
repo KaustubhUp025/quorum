@@ -946,6 +946,47 @@ class GitLabRESTClient:
         resp.raise_for_status()
         return resp.json()
 
+    # ------------------------------------------------------------------
+    # Issue filing
+    # ------------------------------------------------------------------
+
+    async def check_repo_metadata(self, project_id: str) -> dict:
+        """Return key project flags: issues_enabled, visibility, default_branch."""
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}"
+        )
+        if resp.status_code == 404:
+            return {"has_issues": False, "error": "project_not_found"}
+        resp.raise_for_status()
+        p = resp.json()
+        return {
+            "has_issues": p.get("issues_enabled", False),
+            "has_discussions": False,  # GitLab uses issues for discussions
+            "is_fork": p.get("forked_from_project") is not None,
+            "visibility": p.get("visibility", "public"),
+            "default_branch": p.get("default_branch", "main"),
+        }
+
+    async def create_issue(self, project_id: str, title: str, body: str, labels: list[str] | None = None) -> dict:
+        """Create a GitLab issue. Returns {'number': N, 'url': '...', 'blocked': False}."""
+        payload: dict = {"title": title, "description": body}
+        if labels:
+            payload["labels"] = ",".join(labels)
+        resp = await self._client.post(
+            f"{self._base}/projects/{self._pid(project_id)}/issues",
+            json=payload,
+        )
+        if resp.status_code == 403:
+            return {"blocked": True, "reason": "issues_disabled_or_insufficient_permissions", "url": None, "number": None}
+        if resp.status_code == 404:
+            return {"blocked": True, "reason": "project_not_found", "url": None, "number": None}
+        resp.raise_for_status()
+        issue = resp.json()
+        iid = issue.get("iid")
+        url = issue.get("web_url")
+        log.info("gitlab_issue_created", iid=iid, url=url)
+        return {"blocked": False, "number": iid, "url": url}
+
 
 # ---------------------------------------------------------------------------
 # Factory — three-tier client selection

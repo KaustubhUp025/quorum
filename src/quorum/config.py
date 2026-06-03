@@ -121,6 +121,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Issue filing ---
+    auto_file_issues: bool = Field(
+        default=False,
+        description=(
+            "When True, Quorum automatically files a GitHub/GitLab issue for each HIGH+ finding "
+            "after posting the review comment. Falls back to a draft fix PR if issues are disabled, "
+            "and logs a manual-action warning if both paths are blocked."
+        ),
+    )
+    auto_file_issues_min_severity: str = Field(
+        default="HIGH",
+        description="Minimum severity to trigger automatic issue filing: CRITICAL, HIGH, MEDIUM.",
+    )
+
     # --- Fix proposal MRs ---
     create_fix_mrs: bool = Field(
         default=False,

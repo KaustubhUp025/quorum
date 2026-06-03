@@ -340,6 +340,44 @@ class GitHubRESTClient:
         return log_text
 
 
+    # ------------------------------------------------------------------
+    # Issue filing
+    # ------------------------------------------------------------------
+
+    async def check_repo_metadata(self, project_id: str) -> dict:
+        """Return key repo flags: has_issues, has_discussions, is_fork, visibility."""
+        resp = await self._client.get(f"{self._base}/repos/{project_id}")
+        if resp.status_code == 404:
+            return {"has_issues": False, "has_discussions": False, "error": "repo_not_found"}
+        resp.raise_for_status()
+        r = resp.json()
+        return {
+            "has_issues": r.get("has_issues", False),
+            "has_discussions": r.get("has_discussions", False),
+            "is_fork": r.get("fork", False),
+            "visibility": r.get("visibility", "public"),
+            "default_branch": r.get("default_branch", "main"),
+        }
+
+    async def create_issue(self, project_id: str, title: str, body: str, labels: list[str] | None = None) -> dict:
+        """Create a GitHub issue. Returns {'number': N, 'url': '...', 'blocked': False}."""
+        payload: dict = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        resp = await self._client.post(
+            f"{self._base}/repos/{project_id}/issues",
+            json=payload,
+        )
+        if resp.status_code == 410:
+            return {"blocked": True, "reason": "issues_disabled", "url": None, "number": None}
+        if resp.status_code == 403:
+            return {"blocked": True, "reason": "insufficient_permissions", "url": None, "number": None}
+        resp.raise_for_status()
+        issue = resp.json()
+        log.info("github_issue_created", number=issue.get("number"), url=issue.get("html_url"))
+        return {"blocked": False, "number": issue.get("number"), "url": issue.get("html_url")}
+
+
 def make_github_client(settings: object) -> GitHubRESTClient:
     """Return a GitHubRESTClient using QUORUM_GITHUB_TOKEN from settings."""
     from quorum.config import Settings
