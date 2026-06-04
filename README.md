@@ -93,7 +93,7 @@ The `semantic_code_search` call is what makes Quorum **better than a regex linte
 
 ## Rules
 
-Quorum ships with 10 named rules. Each is a standalone Python module — adding a new rule is a single-file contribution.
+Quorum ships with 11 named rules. Each is a standalone Python module — adding a new rule is a single-file contribution.
 
 | ID | Rule | Severity | Reference |
 |---|---|---|---|
@@ -103,10 +103,11 @@ Quorum ships with 10 named rules. Each is a standalone Python module — adding 
 | RULE_04 | Idempotency Key Generated Internally | 🟠 HIGH | [AWS Builders' Library](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotency-tokens/) |
 | RULE_05 | @Transactional Wraps Distributed Lock | 🔴 CRITICAL | [Leapcell — Redis Lock Pitfalls (2025)](https://leapcell.io/blog/redis-distributed-lock-pitfalls) |
 | RULE_06 | Retry Without Jitter | 🟠 HIGH | [AWS — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) |
-| RULE_07 | Sleep in Tests | 🟡 MEDIUM | [Jepsen — Latency tolerance](https://jepsen.io/analyses) |
+| RULE_07 | Unsafe Test Coordination | 🟡 MEDIUM | [Jepsen — Latency tolerance](https://jepsen.io/analyses) |
 | RULE_08 | Kafka Auto-Commit With Manual Ack | 🔴 CRITICAL | [Confluent — Offset Management](https://docs.confluent.io/platform/current/clients/consumer.html) |
 | RULE_09 | Transactional Outbox Missing | 🔴 CRITICAL | [microservices.io — Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) |
 | RULE_10 | Lost Update (SELECT without FOR UPDATE) | 🔴 CRITICAL | [Kleppmann — Designing Data-Intensive Applications §7](https://dataintensive.net/) |
+| RULE_11 | Context Error Masking | 🟠 HIGH | [Go blog — Contexts and structs](https://go.dev/blog/context-and-structs) |
 
 ---
 
@@ -116,9 +117,9 @@ The surface detector fires on coordination patterns across **6 languages**. Gemi
 
 | Language | Detected patterns |
 |---|---|
-| **Python** | All 10 rules — redis-py, kafka-python, aiokafka, SQLAlchemy, Temporal, Saga |
+| **Python** | All 11 rules — redis-py, kafka-python, aiokafka, SQLAlchemy, Temporal, Saga |
 | **Java** | RULE_03 (Axon Saga), RULE_06 (Thread.sleep), RULE_08 (KafkaConsumer), RULE_09 (JPA/Hibernate), RULE_10 (@Version) |
-| **Go** | RULE_01 (go-redis SetNX), RULE_03 (Temporal workflow.ExecuteActivity), RULE_06 (time.Sleep), RULE_08 (sarama AutoCommit, kafka-go CommitInterval≠0), RULE_09 (GORM), RULE_10 (row.Scan) |
+| **Go** | RULE_01 (go-redis SetNX), RULE_03 (Temporal workflow.ExecuteActivity), RULE_06 (time.Sleep), RULE_08 (sarama AutoCommit, kafka-go CommitInterval≠0), RULE_09 (GORM), RULE_10 (row.Scan), RULE_11 (select ctx.Done) |
 | **JavaScript / TypeScript** | RULE_01 (ioredis NX), RULE_03 (NestJS @Saga), RULE_06 (setTimeout), RULE_08 (kafkajs autoCommit), RULE_09 (TypeORM repository.save), RULE_10 (findById/findOne) |
 | **Ruby** | RULE_01 (redis.setnx), RULE_06 (sleep), RULE_08 (karafka), RULE_10 (find/find_by) |
 | **Rust / .NET** | RULE_06 (tokio::time::sleep / Task.Delay), RULE_01 (LockTake/StringSet), RULE_08 (Confluent .NET), RULE_09 (SaveChangesAsync) |
@@ -466,15 +467,33 @@ All settings use the `QUORUM_` prefix (e.g. `QUORUM_GITLAB_TOKEN`).
 
 ---
 
+## Local pre-commit hook
+
+`quorum check` runs Stage 1 only (surface detector — no Gemini, no API calls, ~5 ms). Use it as a git pre-commit hook to catch coordination patterns before they reach CI.
+
+```bash
+# Install once per repo
+quorum check --install-hook
+
+# Or run manually
+quorum check --staged          # default: staged changes
+quorum check --last-commit     # last committed diff
+git diff main... | quorum check --diff -
+```
+
+Exit code 0 = clean. Exit code 1 = surfaces detected → run `quorum review` before merging.
+
+---
+
 ## Adding a new rule
 
 Contributing a rule is a single-file addition. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the full guide.
 
 **Quick version:**
 
-1. Create `src/quorum/rules/rule_11_your_rule_name.py`
+1. Create `src/quorum/rules/rule_12_your_rule_name.py`
 2. Define a `RULE = Rule(...)` with keywords, patterns, search query templates, and reasoning guidance
-3. Add `tests/fixtures/bad/rule_11_*.py` and `tests/fixtures/good/rule_11_*.py`
+3. Add `tests/fixtures/bad/rule_12_*.py` and `tests/fixtures/good/rule_12_*.py`
 4. Add a surface-detector assertion to `tests/test_detector.py`
 5. Open a PR — the registry auto-discovers new rules at startup
 

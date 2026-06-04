@@ -439,6 +439,167 @@ async def _async_file_issue(
             )
 
 
+@main.command("check")
+@click.option(
+    "--staged", "mode", flag_value="staged", default=True,
+    help="Check staged changes (git diff --cached). Default.",
+)
+@click.option(
+    "--last-commit", "mode", flag_value="last-commit",
+    help="Check the last commit (git diff HEAD~1 HEAD).",
+)
+@click.option(
+    "--diff", "diff_file", default=None, metavar="FILE",
+    help="Read diff from FILE (use '-' for stdin).",
+)
+@click.option(
+    "--install-hook", is_flag=True, default=False,
+    help="Install quorum check as a git pre-commit hook in .git/hooks/pre-commit.",
+)
+@click.option(
+    "--quiet", "-q", is_flag=True, default=False,
+    help="Suppress output — only set exit code.",
+)
+def check_cmd(
+    mode: str,
+    diff_file: str | None,
+    install_hook: bool,
+    quiet: bool,
+) -> None:
+    """Fast pre-commit surface scan — no API calls, ~5ms.
+
+    Runs the surface detector (Stage 1 only) against staged changes, the last
+    commit, or a supplied diff. Exits 0 when no coordination surfaces are found,
+    exits 1 when surfaces are detected so the developer knows to run
+    `quorum review` before merging.
+
+    \b
+    Install as a git hook:
+      quorum check --install-hook
+
+    \b
+    Manual usage:
+      quorum check --staged          # default: staged changes
+      quorum check --last-commit     # last committed diff
+      git diff main... | quorum check --diff -   # arbitrary diff on stdin
+    """
+    if install_hook:
+        _install_precommit_hook(quiet)
+        return
+
+    diff = _get_diff(mode, diff_file, quiet)
+    if diff is None:
+        return  # error already printed
+
+    from quorum.detector import detect_surfaces
+    triggered = detect_surfaces(diff)
+
+    if not triggered:
+        if not quiet:
+            console.print("[green]✅  quorum check: no coordination surfaces detected.[/green]")
+        sys.exit(0)
+
+    if not quiet:
+        table = Table(
+            title="⚠  Coordination surfaces detected — consider running `quorum review`",
+            show_lines=True,
+        )
+        table.add_column("Rule", style="cyan")
+        table.add_column("Name")
+        table.add_column("Description (summary)")
+
+        for rule in triggered:
+            table.add_row(rule.id, rule.name, rule.description[:90] + "…")
+
+        console.print(table)
+        console.print(
+            "\n[yellow]Run [bold]quorum review[/bold] to get a full AI-powered "
+            "analysis before merging.[/yellow]"
+        )
+
+    sys.exit(1)
+
+
+def _get_diff(mode: str, diff_file: str | None, quiet: bool) -> str | None:
+    """Return diff text from the appropriate source, or None on error."""
+    import subprocess
+
+    if diff_file is not None:
+        if diff_file == "-":
+            return sys.stdin.read()
+        try:
+            with open(diff_file) as fh:
+                return fh.read()
+        except OSError as exc:
+            if not quiet:
+                console.print(f"[red]Error reading diff file: {exc}[/red]", err=True)
+            sys.exit(2)
+
+    if mode == "staged":
+        cmd = ["git", "diff", "--cached"]
+    else:
+        cmd = ["git", "diff", "HEAD~1", "HEAD"]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            if not quiet:
+                console.print(
+                    f"[red]git command failed: {result.stderr.strip()[:200]}[/red]",
+                    err=True,
+                )
+            sys.exit(2)
+        return result.stdout
+    except FileNotFoundError:
+        if not quiet:
+            console.print("[red]git not found in PATH.[/red]", err=True)
+        sys.exit(2)
+    except subprocess.TimeoutExpired:
+        if not quiet:
+            console.print("[red]git diff timed out.[/red]", err=True)
+        sys.exit(2)
+
+
+def _install_precommit_hook(quiet: bool) -> None:
+    """Write a pre-commit hook script into .git/hooks/pre-commit."""
+    import stat
+    from pathlib import Path
+
+    hook_dir = Path(".git") / "hooks"
+    if not hook_dir.is_dir():
+        if not quiet:
+            console.print(
+                "[red]No .git/hooks directory found. "
+                "Run this from the root of a git repository.[/red]",
+                err=True,
+            )
+        sys.exit(2)
+
+    hook_path = hook_dir / "pre-commit"
+    hook_script = """\
+#!/bin/sh
+# Installed by `quorum check --install-hook`
+# Runs the Quorum surface detector (Stage 1 only, no API calls) on staged changes.
+# Exit 1 blocks the commit and prompts the developer to run `quorum review`.
+quorum check --staged --quiet
+status=$?
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "⚠  Quorum detected coordination surfaces in staged changes."
+  echo "   Run 'quorum check --staged' for details, or"
+  echo "   'quorum review' for a full AI-powered analysis."
+  echo ""
+fi
+exit $status
+"""
+    hook_path.write_text(hook_script)
+    hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    if not quiet:
+        console.print(f"[green]✅  Pre-commit hook installed at {hook_path}[/green]")
+        console.print("[dim]  Runs `quorum check --staged --quiet` before every commit.[/dim]")
+
+
 @main.command("serve")
 @click.option("--host", default="0.0.0.0", help="Bind host")
 @click.option("--port", default=None, type=int, help="Bind port (default: from QUORUM_PORT env)")
