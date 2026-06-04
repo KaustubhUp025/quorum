@@ -86,10 +86,14 @@ TARGETS: list[BenchmarkTarget] = [
         platform="github",
         project_id="atlanhq/atlas-metastore",
         mr_iid=6699,
-        expected_rules=["RULE_09", "RULE_06"],
+        expected_rules=["RULE_09", "RULE_06", "RULE_11"],
         expected_outcome="FINDING",
-        description="Dual write JanusGraph + Kafka without transactional outbox",
-        notes="Java. calculateExponentialBackoff() is pure deterministic. Issues disabled on repo.",
+        description="Dual write JanusGraph + Kafka without transactional outbox; context masking",
+        notes=(
+            "Java. calculateExponentialBackoff() pure deterministic (RULE_06). "
+            "Outbox pattern missing (RULE_09). ctx.Done masking also present (RULE_11). "
+            "Issues disabled on repo — finding reported via PR review comment."
+        ),
     ),
     BenchmarkTarget(
         id="django-logpipe-943",
