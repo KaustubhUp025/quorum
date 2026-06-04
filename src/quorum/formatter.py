@@ -54,6 +54,13 @@ def _finding_block(f: Finding) -> str:
     return "\n\n".join(lines)
 
 
+def _pass_compact_line(f: Finding) -> str:
+    loc = ""
+    if f.file_path:
+        loc = f" · `{f.file_path}`" + (f":{f.line_number}" if f.line_number else "")
+    return f"🟢 **PASS** — {f.rule_id}: {f.title}{loc} ({f.confidence}%)"
+
+
 def format_comment(result: ReviewResult) -> str:
     """Produce the full Markdown body for the MR comment."""
     lines: list[str] = []
@@ -96,14 +103,25 @@ def format_comment(result: ReviewResult) -> str:
 
     lines.append("---")
 
-    # Findings — CRITICAL and HIGH first, then the rest
+    # Findings — CRITICAL and HIGH first, then the rest; PASSes go to a compact collapsible
     priority_order = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.PASS]
     sorted_findings = sorted(
         result.findings, key=lambda f: priority_order.index(f.severity)
     )
 
-    for finding in sorted_findings:
+    non_pass = [f for f in sorted_findings if f.severity != Severity.PASS]
+    pass_findings = [f for f in sorted_findings if f.severity == Severity.PASS]
+
+    for finding in non_pass:
         lines.append(_finding_block(finding))
+        lines.append("---")
+
+    if pass_findings:
+        compact_lines = "\n".join(_pass_compact_line(f) for f in pass_findings)
+        lines.append(
+            f"<details>\n<summary>🟢 Passed checks ({len(pass_findings)})</summary>\n\n"
+            f"{compact_lines}\n\n</details>"
+        )
         lines.append("---")
 
     # CI failure correlation section

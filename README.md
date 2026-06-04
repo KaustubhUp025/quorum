@@ -21,7 +21,7 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | Project | Language | Platform | Bug found | Rule | Reference |
 |---|---|---|---|---|---|
 | `atlanhq/atlas-metastore` | Java | GitHub | `AsyncIngestionConsumerService` writes to JanusGraph then publishes to Kafka with no outbox — phantom events / lost writes on failure. `calculateExponentialBackoff()` uses pure `delay * 2.0` multiplier, no jitter | RULE_09 🔴 + RULE_06 🟠 | [PR #6699 review](https://github.com/atlanhq/atlas-metastore/pull/6699) |
-| `containerd/nerdbox` | Go | GitHub | `waitForShimPipe` retries with fixed `time.Sleep(retryDelay)` — all shims sleep for exactly the same duration and retry simultaneously on Windows pipe failures | RULE_06 🟠 | [Issue #219](https://github.com/containerd/nerdbox/issues/219) |
+| `containerd/nerdbox` | Go | GitHub | `waitForShimPipe` retries with fixed `time.Sleep(retryDelay)` — all shims sleep for exactly the same duration and retry simultaneously on Windows pipe failures. **PR #218 merged with jitter fix applied after Quorum's comment.** | RULE_06 🟠 | [PR #218 (merged)](https://github.com/containerd/nerdbox/pull/218) · [Issue #219](https://github.com/containerd/nerdbox/issues/219) |
 | `vllm-project/vllm` | Python | GitHub | `_load_lora_config` retries with `interval *= 2` — no jitter, thundering herd when multiple workers load same LoRA adapter | RULE_06 🟠 | [Issue #44245](https://github.com/vllm-project/vllm/issues/44245) |
 | `aio-libs/aiokafka` | Python | GitHub | Fixed retry backoff uses `retry_backoff_ms` with no jitter — thundering herd under leader election | RULE_06 🟠 | [Issue #1165](https://github.com/aio-libs/aiokafka/issues/1165) |
 | `thelabnyc/django-logpipe` | Python | GitLab | `ProvisionedThroughputExceededException` retry uses fixed `time.sleep(5)` — all consumers wake simultaneously under Kinesis throttling | RULE_06 🟠 | [Issue #15](https://gitlab.com/thelabnyc/django-logpipe/-/work_items/15) |
@@ -103,7 +103,7 @@ Quorum ships with 11 named rules. Each is a standalone Python module — adding 
 | RULE_04 | Idempotency Key Generated Internally | 🟠 HIGH | [AWS Builders' Library](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotency-tokens/) |
 | RULE_05 | @Transactional Wraps Distributed Lock | 🔴 CRITICAL | [Leapcell — Redis Lock Pitfalls (2025)](https://leapcell.io/blog/redis-distributed-lock-pitfalls) |
 | RULE_06 | Retry Without Jitter | 🟠 HIGH | [AWS — Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) |
-| RULE_07 | Unsafe Test Coordination | 🟡 MEDIUM | [Jepsen — Latency tolerance](https://jepsen.io/analyses) |
+| RULE_07 | Unsafe Test Coordination | 🟡 MEDIUM / 🟠 HIGH | [Jepsen — Latency tolerance](https://jepsen.io/analyses) |
 | RULE_08 | Kafka Auto-Commit With Manual Ack | 🔴 CRITICAL | [Confluent — Offset Management](https://docs.confluent.io/platform/current/clients/consumer.html) |
 | RULE_09 | Transactional Outbox Missing | 🔴 CRITICAL | [microservices.io — Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) |
 | RULE_10 | Lost Update (SELECT without FOR UPDATE) | 🔴 CRITICAL | [Kleppmann — Designing Data-Intensive Applications §7](https://dataintensive.net/) |
@@ -156,9 +156,12 @@ conditional check to every write while the lock is held.
 
 ---
 
-### 🟢 PASS — RULE_07: Sleep correctly identified as task mock, not flaky test
-**Confidence: 100%** | `tests/test_fetcher.py:343`
-asyncio.sleep(1000000) replaces a background task — valid test scaffolding.
+<details>
+<summary>🟢 Passed checks (1)</summary>
+
+🟢 **PASS** — RULE_07: Sleep correctly identified as task mock, not flaky test · `tests/test_fetcher.py:343` (100%)
+
+</details>
 ```
 
 ---

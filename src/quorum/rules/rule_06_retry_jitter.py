@@ -72,6 +72,13 @@ RULE = Rule(
         "includes a random component (Math.random(), random.uniform, random.randint, jitter). "
         "Flag HIGH for deterministic-only backoff. "
         "Flag MEDIUM if there is a retry utility elsewhere in the project (per search results) "
-        "that already has jitter — the new code should use it instead."
+        "that already has jitter — the new code should use it instead.\n"
+        "When suggesting a fix, always recommend the PROPORTIONAL jitter form — jitter that "
+        "scales with the base delay — not a fixed millisecond amount:\n"
+        "  Go:     backoff + time.Duration(rand.Int64N(int64(backoff)))   // up to 100%% of base\n"
+        "  Python: delay * random.uniform(0.5, 1.5)  or  random.uniform(0, min(cap, base * 2**n))\n"
+        "  Java:   (long)(delay * (1 + Math.random()))\n"
+        "Avoid suggesting fixed amounts like rand.Intn(10)*time.Millisecond — these are not "
+        "proportional to the base delay and provide negligible spread at large intervals."
     ),
 )
