@@ -355,7 +355,18 @@ class DeepReasoningAgent:
                     if p.text and not getattr(p, "thought", False)
                 ]
                 if text_parts:
-                    return "\n".join(text_parts)
+                    combined = "\n".join(text_parts)
+                    # Gemini sometimes emits "call:<name>{...}" as plain text instead of
+                    # a structured function call. Detect this and keep looping so the
+                    # model gets another chance to produce a proper tool call.
+                    if combined.strip().startswith("call:") or combined.strip().startswith("```call:"):
+                        log.debug(
+                            "text_tool_call_detected",
+                            round=round_num,
+                            preview=combined[:80],
+                        )
+                        continue
+                    return combined
                 # Silent planning / thinking turn — keep history and continue
                 log.debug(
                     "empty_thinking_turn",
