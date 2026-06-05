@@ -96,7 +96,39 @@ class TestSurfaceDetector:
         ids = [r.id for r in triggered]
         assert "RULE_10" in ids
 
+    def test_kafka_consumer_no_dlq_triggers_rule_12(self, bad_fixture):
+        diff = bad_fixture("rule_12_no_dlq.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_12" in ids
+
+    def test_dlq_good_fixture_still_triggers_detector(self, good_fixture):
+        # consumer.poll is still present in good fixture — detector fires, Gemini clears
+        diff = good_fixture("rule_12_with_dlq.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_12" in ids
+
+    def test_consumer_no_dedup_triggers_rule_13(self, bad_fixture):
+        diff = bad_fixture("rule_13_no_dedup.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_13" in ids
+
+    def test_requests_no_timeout_triggers_rule_14(self, bad_fixture):
+        diff = bad_fixture("rule_14_no_timeout.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_14" in ids
+
+    def test_httpx_with_timeout_still_triggers_detector(self, good_fixture):
+        # httpx keyword still fires the pre-filter; Gemini clears it
+        diff = good_fixture("rule_14_with_timeout.py")
+        triggered = detect_surfaces(diff)
+        ids = [r.id for r in triggered]
+        assert "RULE_14" in ids
+
     def test_registry_fully_loaded(self):
-        assert len(REGISTRY) == 11
-        expected_ids = {f"RULE_{i:02d}" for i in range(1, 12)}
+        assert len(REGISTRY) == 14
+        expected_ids = {f"RULE_{i:02d}" for i in range(1, 15)}
         assert set(REGISTRY.keys()) == expected_ids

@@ -118,7 +118,7 @@ The `semantic_code_search` call is what makes Quorum **better than a regex linte
 
 ## Rules
 
-Quorum ships with 11 named rules. Each is a standalone Python module — adding a new rule is a single-file contribution.
+Quorum ships with 14 named rules. Each is a standalone Python module — adding a new rule is a single-file contribution.
 
 | ID | Rule | Severity | Reference |
 |---|---|---|---|
@@ -133,6 +133,9 @@ Quorum ships with 11 named rules. Each is a standalone Python module — adding 
 | RULE_09 | Transactional Outbox Missing | 🔴 CRITICAL | [microservices.io — Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) |
 | RULE_10 | Lost Update (SELECT without FOR UPDATE) | 🔴 CRITICAL | [Kleppmann — Designing Data-Intensive Applications §7](https://dataintensive.net/) |
 | RULE_11 | Context Error Masking | 🟠 HIGH | [Go blog — Contexts and structs](https://go.dev/blog/context-and-structs) |
+| RULE_12 | Dead Letter Queue Missing | 🟠 HIGH | [Confluent — Error Handling in Apache Kafka](https://www.confluent.io/blog/error-handling-patterns-in-kafka/) |
+| RULE_13 | Idempotent Consumer Missing | 🔴 CRITICAL / 🟠 HIGH | [Confluent — Exactly-Once Semantics](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/) |
+| RULE_14 | Cascading Timeout Missing | 🟠 HIGH | [Google SRE Book Ch. 22 — Cascading Failures](https://sre.google/sre-book/addressing-cascading-failures/) |
 
 ---
 
@@ -142,10 +145,10 @@ The surface detector fires on coordination patterns across **6 languages**. Gemi
 
 | Language | Detected patterns |
 |---|---|
-| **Python** | All 11 rules — redis-py, kafka-python, aiokafka, SQLAlchemy, Temporal, Saga |
-| **Java** | RULE_03 (Axon Saga), RULE_06 (Thread.sleep), RULE_08 (KafkaConsumer), RULE_09 (JPA/Hibernate), RULE_10 (@Version) |
-| **Go** | RULE_01 (go-redis SetNX), RULE_03 (Temporal workflow.ExecuteActivity), RULE_06 (time.Sleep), RULE_08 (sarama AutoCommit, kafka-go CommitInterval≠0), RULE_09 (GORM), RULE_10 (row.Scan), RULE_11 (select ctx.Done) |
-| **JavaScript / TypeScript** | RULE_01 (ioredis NX), RULE_03 (NestJS @Saga), RULE_06 (setTimeout), RULE_08 (kafkajs autoCommit), RULE_09 (TypeORM repository.save), RULE_10 (findById/findOne) |
+| **Python** | All 14 rules — redis-py, kafka-python, aiokafka, SQLAlchemy, Temporal, Saga, requests, httpx |
+| **Java** | RULE_03 (Axon Saga), RULE_06 (Thread.sleep), RULE_08 (@KafkaListener), RULE_09 (JPA/Hibernate), RULE_10 (@Version), RULE_12 (KafkaConsumer DLQ), RULE_13 (ConsumerRecord), RULE_14 (RestTemplate/WebClient) |
+| **Go** | RULE_01 (go-redis SetNX), RULE_03 (Temporal workflow.ExecuteActivity), RULE_06 (time.Sleep), RULE_08 (sarama AutoCommit, kafka-go CommitInterval≠0), RULE_09 (GORM), RULE_10 (row.Scan), RULE_11 (select ctx.Done), RULE_14 (http.Get/DefaultClient) |
+| **JavaScript / TypeScript** | RULE_01 (ioredis NX), RULE_03 (NestJS @Saga), RULE_06 (setTimeout), RULE_08 (kafkajs autoCommit), RULE_09 (TypeORM repository.save), RULE_10 (findById/findOne), RULE_12 (eachMessage), RULE_13 (eachMessage body write), RULE_14 (fetch/axios) |
 | **Ruby** | RULE_01 (redis.setnx), RULE_06 (sleep), RULE_08 (karafka), RULE_10 (find/find_by) |
 | **Rust / .NET** | RULE_06 (tokio::time::sleep / Task.Delay), RULE_01 (LockTake/StringSet), RULE_08 (Confluent .NET), RULE_09 (SaveChangesAsync) |
 
@@ -612,7 +615,7 @@ For organisations deploying Quorum as a shared service (GitHub App / GitLab App)
 ```bash
 pip install -e ".[dev]"
 
-pytest                     # run all 151 tests
+pytest                     # run all 156 tests
 ruff check src/ tests/     # lint
 mypy src/                  # type check
 ```
