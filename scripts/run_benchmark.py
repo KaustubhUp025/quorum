@@ -111,6 +111,64 @@ TARGETS: list[BenchmarkTarget] = [
         description="Kinesis re-seek retry with fixed time.sleep(5) on throttle errors",
         notes="Issue #15 filed at gitlab.com/thelabnyc/django-logpipe/-/work_items/15",
     ),
+    # --- GitLab FINDING targets (multi-language — proves language support) ---
+    BenchmarkTarget(
+        id="multi-lang-ts-1",
+        platform="gitlab",
+        project_id="quorum-hackathon/multi-lang-coordination-demo",
+        mr_iid=1,
+        expected_rules=["RULE_08"],
+        expected_outcome="FINDING",
+        description="TypeScript kafkajs consumer: autoCommit:true — offset committed before handler",
+        notes=(
+            "RULE_08 CRITICAL 100%: eachMessage handler does db.query + fetch; "
+            "autoCommit fires on interval, not on handler completion. "
+            "Note 3424898524 posted."
+        ),
+    ),
+    BenchmarkTarget(
+        id="multi-lang-go-2",
+        platform="gitlab",
+        project_id="quorum-hackathon/multi-lang-coordination-demo",
+        mr_iid=2,
+        expected_rules=["RULE_06"],
+        expected_outcome="FINDING",
+        description="Go inventory client: time.Sleep(retryDelay) fixed constant, no jitter",
+        notes=(
+            "RULE_06 HIGH 100%: const retryDelay = 2*time.Second, fixed for all attempts. "
+            "RULE_07 PASS: test file uses no coordination sleep. "
+            "Note 3424900371 posted."
+        ),
+    ),
+    BenchmarkTarget(
+        id="multi-lang-ruby-3",
+        platform="gitlab",
+        project_id="quorum-hackathon/multi-lang-coordination-demo",
+        mr_iid=3,
+        expected_rules=["RULE_01"],
+        expected_outcome="FINDING",
+        description='Ruby distributed lock: redis.set(key, "locked") — static value, no fencing token',
+        notes=(
+            'RULE_01 CRITICAL 100%: @redis.set(@key, "locked", nx: true) — static string. '
+            "No UUID/fencing token; stale process cannot be detected. "
+            "Note 3424902181 posted."
+        ),
+    ),
+    BenchmarkTarget(
+        id="multi-lang-java-4",
+        platform="gitlab",
+        project_id="quorum-hackathon/multi-lang-coordination-demo",
+        mr_iid=4,
+        expected_rules=["RULE_06"],
+        expected_outcome="FINDING",
+        description="Java payment processor: Thread.sleep(RETRY_DELAY_MS) fixed constant, no jitter",
+        notes=(
+            "RULE_06 HIGH 100%: static final RETRY_DELAY_MS = 3000L, no random component. "
+            "RULE_07 PASS: Thread.sleep in catch block is retry, not test coordination. "
+            "RULE_11 PASS: InterruptedException re-interrupt is correct. "
+            "Note 3424904116 posted."
+        ),
+    ),
     # --- GitLab PASS targets (zero false positives on GitLab's own infra) ---
     BenchmarkTarget(
         id="gitaly-8812",

@@ -28,7 +28,12 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | `Alexandre_Toto/architecture-event-driven-cdc` | Python | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 🔴 + RULE_10 🔴 | [Issue #1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
 | `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
 
-**7 independent projects · 4 languages (Java, Go, Python, Ruby) · 2 platforms · zero false positives across all runs.**
+| `quorum-hackathon/multi-lang-coordination-demo` | TypeScript | GitLab | kafkajs `autoCommit:true` — offset committed before `eachMessage` handler completes | RULE_08 🔴 | [MR !1](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/1) |
+| `quorum-hackathon/multi-lang-coordination-demo` | Go | GitLab | `time.Sleep(retryDelay)` — fixed 2s constant, no jitter, thundering herd on inventory service | RULE_06 🟠 | [MR !2](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/2) |
+| `quorum-hackathon/multi-lang-coordination-demo` | Ruby | GitLab | `redis.set(key, "locked")` — static lock value, no fencing token | RULE_01 🔴 | [MR !3](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/3) |
+| `quorum-hackathon/multi-lang-coordination-demo` | Java | GitLab | `Thread.sleep(RETRY_DELAY_MS)` — fixed 3s constant, no jitter on payment gateway retries | RULE_06 🟠 | [MR !4](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/4) |
+
+**11 independent targets · 5 languages (Java, Go, Python, Ruby, TypeScript) · 2 platforms · zero false positives across all runs.**
 
 ### True-negative validation on GitLab's own infrastructure
 
