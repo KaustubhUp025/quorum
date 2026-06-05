@@ -23,12 +23,24 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | `atlanhq/atlas-metastore` | Java | GitHub | `AsyncIngestionConsumerService` writes to JanusGraph then publishes to Kafka with no outbox — phantom events / lost writes on failure. `calculateExponentialBackoff()` uses pure `delay * 2.0` multiplier, no jitter | RULE_09 🔴 + RULE_06 🟠 | [PR #6699 review](https://github.com/atlanhq/atlas-metastore/pull/6699) |
 | `containerd/nerdbox` | Go | GitHub | `waitForShimPipe` retries with fixed `time.Sleep(retryDelay)` — all shims sleep for exactly the same duration and retry simultaneously on Windows pipe failures. **PR #218 merged with jitter fix applied after Quorum's comment.** | RULE_06 🟠 | [PR #218 (merged)](https://github.com/containerd/nerdbox/pull/218) · [Issue #219](https://github.com/containerd/nerdbox/issues/219) |
 | `vllm-project/vllm` | Python | GitHub | `_load_lora_config` retries with `interval *= 2` — no jitter, thundering herd when multiple workers load same LoRA adapter | RULE_06 🟠 | [Issue #44245](https://github.com/vllm-project/vllm/issues/44245) |
-| `aio-libs/aiokafka` | Python | GitHub | Fixed retry backoff uses `retry_backoff_ms` with no jitter — thundering herd under leader election | RULE_06 🟠 | [Issue #1165](https://github.com/aio-libs/aiokafka/issues/1165) |
+| `aio-libs/aiokafka` | Python | GitHub | Fixed retry backoff uses `retry_backoff_ms` with no jitter — thundering herd under leader election. **Draft fix PR opened after maintainer confirmed no response on issue.** | RULE_06 🟠 | [Issue #1165](https://github.com/aio-libs/aiokafka/issues/1165) · [Draft fix PR #1167](https://github.com/aio-libs/aiokafka/pull/1167) |
 | `thelabnyc/django-logpipe` | Python | GitLab | `ProvisionedThroughputExceededException` retry uses fixed `time.sleep(5)` — all consumers wake simultaneously under Kinesis throttling | RULE_06 🟠 | [Issue #15](https://gitlab.com/thelabnyc/django-logpipe/-/work_items/15) |
 | `Alexandre_Toto/architecture-event-driven-cdc` | Python | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 🔴 + RULE_10 🔴 | [Issue #1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
 | `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
 
-**7 independent projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
+**7 independent projects · 4 languages (Java, Go, Python, Ruby) · 2 platforms · zero false positives across all runs.**
+
+### True-negative validation on GitLab's own infrastructure
+
+Quorum was also run (dry-run, no comment posted) on three open MRs in GitLab's own production repositories. All three produced correct **PASS** verdicts — confirming Quorum does not false-positive on well-written distributed systems code:
+
+| Project | Language | MR | Surfaces triggered | Verdict | Reason |
+|---|---|---|---|---|---|
+| `gitlab-org/gitaly` | Go | [!8812](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/8812) | RULE_06, RULE_09, RULE_11 | 🟢 PASS | Retries route to a different peer each attempt via rendezvous hashing — fixed delays don't cause thundering herd |
+| `gitlab-org/gitlab-runner` | Go | [!6806](https://gitlab.com/gitlab-org/gitlab-runner/-/merge_requests/6806) | RULE_02 | 🟢 PASS | `context.WithTimeout` — not a distributed lock; TTL concern doesn't apply |
+| `gitlab-org/gitlab` | Ruby | [!233672](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/233672) | RULE_10 | 🟢 PASS | Pessimistic `FOR UPDATE` lock already present in the query |
+
+A full Quorum review comment was also posted on `gitlab-org/gitaly` !8812 (note_id 3424838512): [view comment](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/8812#note_3424838512)
 
 ---
 
@@ -614,6 +626,7 @@ mypy src/                  # type check
 - **Rules are data:** Keywords, patterns, search templates, and reasoning guidance — not if/else chains. Detection intelligence lives in the Gemini system prompt. Easy to review and contribute.
 - **Cross-repo context:** `semantic_code_search` is load-bearing. A diff-only reviewer has high false-positive rates. Cross-project search is what lets Quorum say "this lock has no fencing token anywhere in the codebase" with 100% confidence.
 - **Confidence threshold:** Gemini self-reports confidence (0–100) per finding. Findings below `QUORUM_MIN_CONFIDENCE` are suppressed. Tunable per project via `.quorum.yml`.
+- **Resilient tool-call loop:** When using Gemini context caching (tools embedded in the cache), the model occasionally emits tool invocations as plain text instead of structured function-call parts. The agent detects three encoding variants (`call:<name>{}`, `<execute_tool>` XML, `tool_name` in raw text) and nudges the model back to the structured API rather than crashing.
 
 ---
 

@@ -46,7 +46,103 @@ class BenchmarkTarget:
     notes: str = ""
 
 TARGETS: list[BenchmarkTarget] = [
-    # --- FINDING targets (real bugs already confirmed) -----------------------
+    # --- GitLab FINDING targets (real bugs, controlled + public repos) -------
+    BenchmarkTarget(
+        id="architecture-cdc-1",
+        platform="gitlab",
+        project_id="quorum-hackathon/architecture-event-driven-cdc",
+        mr_iid=1,
+        expected_rules=["RULE_08", "RULE_10"],
+        expected_outcome="FINDING",
+        description="Payment Kafka consumer: enable_auto_commit=True + balance lost update",
+        notes=(
+            "RULE_10 CRITICAL: fetchone()+UPDATE balance without FOR UPDATE. "
+            "RULE_08 CRITICAL: auto-commit before processing in financial payment path. "
+            "Issues filed in original Alexandre_Toto/architecture-event-driven-cdc repo."
+        ),
+    ),
+    BenchmarkTarget(
+        id="fastapi-kafka-1",
+        platform="gitlab",
+        project_id="quorum-hackathon/fastapi-kafka-consumer",
+        mr_iid=1,
+        expected_rules=["RULE_08"],
+        expected_outcome="FINDING",
+        description="FastAPI metrics consumer: AIOKafkaConsumer with enable_auto_commit=True",
+        notes=(
+            "RULE_08 HIGH 95%: offset committed before _store_metric() completes. "
+            "Issue filed in original lhyou/fastapi-test repo."
+        ),
+    ),
+    BenchmarkTarget(
+        id="quorum-demo-1",
+        platform="gitlab",
+        project_id="quorum-hackathon/quorum-demo",
+        mr_iid=1,
+        expected_rules=["RULE_01", "RULE_03", "RULE_06", "RULE_09", "RULE_10"],
+        expected_outcome="FINDING",
+        description="Intentional demo: 5 coordination bugs in payment/order/lock services",
+        notes=(
+            "RULE_01 CRITICAL: static 'locked' value in Redis SET NX. "
+            "RULE_03 CRITICAL: cancelShipment compensation missing. "
+            "RULE_06 HIGH: 2**attempt with no jitter. "
+            "RULE_09 CRITICAL: session.commit() + kafka producer.send() no outbox. "
+            "RULE_10 CRITICAL: fetchone()+UPDATE balance. "
+            "RULE_07 PASS: time.sleep in payment_client correctly identified as prod retry."
+        ),
+    ),
+    BenchmarkTarget(
+        id="rjackson-swag-19",
+        platform="gitlab",
+        project_id="rjackson-education/swag-shop",
+        mr_iid=19,
+        expected_rules=["RULE_06"],
+        expected_outcome="FINDING",
+        description="Swag shop checkout: retry without jitter on payment API errors",
+        notes="RULE_06 HIGH: fixed sleep in retry loop; thundering herd under payment gateway throttle.",
+    ),
+    BenchmarkTarget(
+        id="django-logpipe-943",
+        platform="gitlab",
+        project_id="thelabnyc/django-logpipe",
+        mr_iid=943,
+        expected_rules=["RULE_06"],
+        expected_outcome="FINDING",
+        description="Kinesis re-seek retry with fixed time.sleep(5) on throttle errors",
+        notes="Issue #15 filed at gitlab.com/thelabnyc/django-logpipe/-/work_items/15",
+    ),
+    # --- GitLab PASS targets (zero false positives on GitLab's own infra) ---
+    BenchmarkTarget(
+        id="gitaly-8812",
+        platform="gitlab",
+        project_id="gitlab-org/gitaly",
+        mr_iid=8812,
+        expected_rules=[],
+        expected_outcome="PASS",
+        description="Elastic cluster proxy — rendezvous-hash routing eliminates thundering herd",
+        notes=(
+            "RULE_06 surface fires on proxyRetryBackoffs=[100ms,1s] fixed array. "
+            "Gemini correctly PASSes: retries route to a different peer each attempt via "
+            "rendezvous hashing, so simultaneous retries do NOT hit the same target. "
+            "Full review comment posted: note_3424838512. "
+            "RULE_09 PASS: no outbox pattern needed (non-transactional routing). "
+            "RULE_11 PASS: ctx.Done usage is correct error forwarding."
+        ),
+    ),
+    BenchmarkTarget(
+        id="gitlab-runner-6806",
+        platform="gitlab",
+        project_id="gitlab-org/gitlab-runner",
+        mr_iid=6806,
+        expected_rules=[],
+        expected_outcome="PASS",
+        description="Runner task scheduling: context.WithTimeout is not a distributed lock",
+        notes=(
+            "RULE_02 surface fires. Gemini correctly PASSes: context.WithTimeout is local "
+            "goroutine cancellation, not a distributed lock with wall-clock TTL semantics."
+        ),
+    ),
+    # --- GitHub FINDING targets ---------------------------------------------
     BenchmarkTarget(
         id="aiokafka-1164",
         platform="github",
@@ -95,17 +191,7 @@ TARGETS: list[BenchmarkTarget] = [
             "Issues disabled on repo — finding reported via PR review comment."
         ),
     ),
-    BenchmarkTarget(
-        id="django-logpipe-943",
-        platform="gitlab",
-        project_id="thelabnyc/django-logpipe",
-        mr_iid=943,
-        expected_rules=["RULE_06"],
-        expected_outcome="FINDING",
-        description="Kinesis re-seek retry with fixed time.sleep(5) on throttle errors",
-        notes="Issue #15 filed at gitlab.com/thelabnyc/django-logpipe/-/work_items/15",
-    ),
-    # --- PASS targets (correct implementations — low false-positive proof) ---
+    # --- GitHub PASS targets ------------------------------------------------
     BenchmarkTarget(
         id="temporalio-sagas",
         platform="github",
