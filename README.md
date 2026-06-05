@@ -28,12 +28,20 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | `Alexandre_Toto/architecture-event-driven-cdc` | Python | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 🔴 + RULE_10 🔴 | [Issue #1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
 | `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
 
+**7 independent open-source projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
+
+### Multi-language benchmark validation
+
+Validated on four dedicated benchmark MRs in a purpose-built demo repository, confirming surface detection and Gemini reasoning across 4 additional languages:
+
+| Project | Language | Platform | Bug | Rule | Reference |
+|---|---|---|---|---|---|
 | `quorum-hackathon/multi-lang-coordination-demo` | TypeScript | GitLab | kafkajs `autoCommit:true` — offset committed before `eachMessage` handler completes | RULE_08 🔴 | [MR !1](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/1) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Go | GitLab | `time.Sleep(retryDelay)` — fixed 2s constant, no jitter, thundering herd on inventory service | RULE_06 🟠 | [MR !2](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/2) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Ruby | GitLab | `redis.set(key, "locked")` — static lock value, no fencing token | RULE_01 🔴 | [MR !3](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/3) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Java | GitLab | `Thread.sleep(RETRY_DELAY_MS)` — fixed 3s constant, no jitter on payment gateway retries | RULE_06 🟠 | [MR !4](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/4) |
 
-**11 independent targets · 5 languages (Java, Go, Python, Ruby, TypeScript) · 2 platforms · zero false positives across all runs.**
+All 4 review comments posted live. RULE_07 and RULE_11 correctly PASS on the Java MR (catch-block retry ≠ test sleep, re-interrupt is the correct Go idiom).
 
 ### True-negative validation on GitLab's own infrastructure
 
@@ -141,7 +149,7 @@ The surface detector fires on coordination patterns across **6 languages**. Gemi
 | **Ruby** | RULE_01 (redis.setnx), RULE_06 (sleep), RULE_08 (karafka), RULE_10 (find/find_by) |
 | **Rust / .NET** | RULE_06 (tokio::time::sleep / Task.Delay), RULE_01 (LockTake/StringSet), RULE_08 (Confluent .NET), RULE_09 (SaveChangesAsync) |
 
-Real-world validated: Python (5 projects), Java (1 project), Go (1 project).
+Real-world validated on open-source projects: Python (5), Java (1), Go (1). TypeScript and Ruby validated via dedicated benchmark MRs.
 
 ---
 
