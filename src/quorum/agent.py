@@ -356,14 +356,39 @@ class DeepReasoningAgent:
                 ]
                 if text_parts:
                     combined = "\n".join(text_parts)
-                    # Gemini sometimes emits "call:<name>{...}" as plain text instead of
-                    # a structured function call. Detect this and keep looping so the
-                    # model gets another chance to produce a proper tool call.
-                    if combined.strip().startswith("call:") or combined.strip().startswith("```call:"):
+                    # Gemini sometimes emits tool calls as plain text instead of using
+                    # the structured function-call API — typically when using a context
+                    # cache (tools are in the cache, not the live request). Patterns seen:
+                    #   "call:get_merge_request{}"
+                    #   "`get_merge_request`\n<execute_tool>{...}</execute_tool>"
+                    #   "```\n{\"tool_name\": \"get_merge_request\"}\n```"
+                    # Detect all of them and nudge the model back to structured calls.
+                    is_text_tool_call = (
+                        combined.strip().startswith("call:")
+                        or "<execute_tool>" in combined
+                        or (
+                            "tool_name" in combined
+                            and not combined.strip().startswith("{")
+                        )
+                    )
+                    if is_text_tool_call:
                         log.debug(
                             "text_tool_call_detected",
                             round=round_num,
                             preview=combined[:80],
+                        )
+                        # Nudge: tell the model to use the structured function-call API
+                        contents.append(
+                            types.Content(
+                                role="user",
+                                parts=[types.Part(
+                                    text=(
+                                        "Please use the structured function-calling API "
+                                        "to call tools rather than writing tool calls as "
+                                        "plain text. Try again."
+                                    )
+                                )],
+                            )
                         )
                         continue
                     return combined
