@@ -83,6 +83,10 @@ class GitLabClient(Protocol):
         line_number: int | None = None,
         diff_refs: dict | None = None,
     ) -> str: ...
+    async def list_mr_notes(self, project_id: str, mr_iid: int) -> list[dict]: ...
+    async def get_project_languages(self, project_id: str) -> dict[str, float]: ...
+    async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None: ...
+    async def get_file_contributors(self, project_id: str, file_path: str) -> list[str]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +335,22 @@ class GitLabGlabMCPClient:
     async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]:
         assert self._rest is not None
         return await self._rest.get_pipeline_jobs(project_id, pipeline_id)
+
+    async def list_mr_notes(self, project_id: str, mr_iid: int) -> list[dict]:
+        assert self._rest is not None
+        return await self._rest.list_mr_notes(project_id, mr_iid)
+
+    async def get_project_languages(self, project_id: str) -> dict[str, float]:
+        assert self._rest is not None
+        return await self._rest.get_project_languages(project_id)
+
+    async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None:
+        assert self._rest is not None
+        await self._rest.apply_mr_labels(project_id, mr_iid, labels)
+
+    async def get_file_contributors(self, project_id: str, file_path: str) -> list[str]:
+        assert self._rest is not None
+        return await self._rest.get_file_contributors(project_id, file_path)
 
     async def list_available_tools(self) -> list[str]:
         return sorted(self._available_tools)
@@ -649,6 +669,22 @@ class GitLabYodaMCPClient:
     async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]:
         assert self._rest is not None
         return await self._rest.get_pipeline_jobs(project_id, pipeline_id)
+
+    async def list_mr_notes(self, project_id: str, mr_iid: int) -> list[dict]:
+        assert self._rest is not None
+        return await self._rest.list_mr_notes(project_id, mr_iid)
+
+    async def get_project_languages(self, project_id: str) -> dict[str, float]:
+        assert self._rest is not None
+        return await self._rest.get_project_languages(project_id)
+
+    async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None:
+        assert self._rest is not None
+        await self._rest.apply_mr_labels(project_id, mr_iid, labels)
+
+    async def get_file_contributors(self, project_id: str, file_path: str) -> list[str]:
+        assert self._rest is not None
+        return await self._rest.get_file_contributors(project_id, file_path)
 
     async def list_available_tools(self) -> list[str]:
         return sorted(self._available_tools)
@@ -984,6 +1020,7 @@ class GitLabRESTClient:
             "web_url": mr.get("web_url", ""),
             "title": mr.get("title", ""),
             "state": mr.get("state", ""),
+            "author": mr.get("author", {}).get("username", ""),
             "base_sha": diff_refs.get("base_sha", ""),
             "head_sha": diff_refs.get("head_sha", ""),
             "start_sha": diff_refs.get("start_sha", ""),
@@ -1088,6 +1125,73 @@ class GitLabRESTClient:
         url = issue.get("web_url")
         log.info("gitlab_issue_created", iid=iid, url=url)
         return {"blocked": False, "number": iid, "url": url}
+
+    # ------------------------------------------------------------------
+    # Phase C — MCP tool usage improvements
+    # ------------------------------------------------------------------
+
+    async def list_mr_notes(self, project_id: str, mr_iid: int) -> list[dict]:
+        """Return top-level notes on an MR (for duplicate-review detection)."""
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}/notes",
+            params={"per_page": 20, "sort": "desc"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_project_languages(self, project_id: str) -> dict[str, float]:
+        """Return language percentages, e.g. {'Python': 68.3, 'JavaScript': 31.7}."""
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/languages"
+        )
+        if resp.status_code == 404:
+            return {}
+        resp.raise_for_status()
+        # GitLab returns percentages directly: {"Python": 68.34, "JavaScript": 31.66}
+        raw = resp.json()
+        return {lang: float(pct) for lang, pct in raw.items()} if raw else {}
+
+    async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None:
+        """Additively apply labels to an MR (existing labels are preserved)."""
+        # Fetch current labels first to avoid overwriting
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}"
+        )
+        resp.raise_for_status()
+        existing = resp.json().get("labels", [])
+        combined = list(set(existing) | set(labels))
+        put = await self._client.put(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}",
+            json={"labels": ",".join(combined)},
+        )
+        if put.status_code in (200, 201):
+            log.info("mr_labels_applied", labels=combined)
+        else:
+            log.warning("mr_labels_failed", status=put.status_code)
+
+    async def get_file_contributors(self, project_id: str, file_path: str) -> list[str]:
+        """Return usernames of the last 5 committers to file_path (most recent first)."""
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}/repository/commits",
+            params={"path": file_path, "per_page": 5},
+        )
+        if resp.status_code in (404, 400):
+            return []
+        resp.raise_for_status()
+        commits = resp.json()
+        seen: list[str] = []
+        for c in commits:
+            # Prefer committer_name then author_name; skip bots / CI accounts
+            username = (
+                (c.get("author", {}) or {}).get("username")
+                or c.get("committer_name")
+                or c.get("author_name")
+                or ""
+            )
+            username = username.strip()
+            if username and username not in seen:
+                seen.append(username)
+        return seen
 
 
 # ---------------------------------------------------------------------------

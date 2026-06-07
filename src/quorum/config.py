@@ -150,6 +150,22 @@ class Settings(BaseSettings):
         description="Maximum number of fix MRs to open per review (to avoid MR spam).",
     )
 
+    # --- Phase C features ---
+    apply_labels: bool = Field(
+        default=True,
+        description=(
+            "When True, Quorum applies a 'quorum-review' label (or 'quorum-review::critical') "
+            "to the MR/PR after posting findings. Labels are additive — existing labels are kept."
+        ),
+    )
+    force_review: bool = Field(
+        default=False,
+        description=(
+            "When True, skip the duplicate-review guard and post a new comment even if "
+            "Quorum has already reviewed this MR. Useful for re-runs and debugging."
+        ),
+    )
+
     # --- CI failure correlation ---
     correlate_ci: bool = Field(
         default=False,

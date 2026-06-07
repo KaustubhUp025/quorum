@@ -118,6 +118,7 @@ class GitHubRESTClient:
             "title": pr.get("title", ""),
             "state": pr.get("state", ""),
             "head_sha": pr.get("head", {}).get("sha", ""),
+            "author": pr.get("user", {}).get("login", ""),
         }
 
     # ------------------------------------------------------------------
@@ -404,6 +405,57 @@ class GitHubRESTClient:
         issue = resp.json()
         log.info("github_issue_created", number=issue.get("number"), url=issue.get("html_url"))
         return {"blocked": False, "number": issue.get("number"), "url": issue.get("html_url")}
+
+    # ------------------------------------------------------------------
+    # Phase C — MCP tool usage improvements
+    # ------------------------------------------------------------------
+
+    async def list_mr_notes(self, project_id: str, mr_iid: int) -> list[dict]:
+        """Return top-level PR issue comments (for duplicate-review detection)."""
+        resp = await self._client.get(
+            f"{self._base}/repos/{project_id}/issues/{mr_iid}/comments",
+            params={"per_page": 20},
+        )
+        resp.raise_for_status()
+        return [{"body": c.get("body", "")} for c in resp.json()]
+
+    async def get_project_languages(self, project_id: str) -> dict[str, float]:
+        """Return language percentages, e.g. {'Python': 68.3, 'JavaScript': 31.7}."""
+        resp = await self._client.get(f"{self._base}/repos/{project_id}/languages")
+        if resp.status_code == 404:
+            return {}
+        resp.raise_for_status()
+        raw = resp.json()  # GitHub returns byte counts per language
+        total = sum(raw.values()) or 1
+        return {lang: round(bytes_count / total * 100, 1) for lang, bytes_count in raw.items()}
+
+    async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None:
+        """Add labels to a PR (GitHub PRs share the issues API for labels)."""
+        resp = await self._client.post(
+            f"{self._base}/repos/{project_id}/issues/{mr_iid}/labels",
+            json={"labels": labels},
+        )
+        if resp.status_code in (200, 201):
+            log.info("github_pr_labels_applied", labels=labels)
+        else:
+            log.warning("github_pr_labels_failed", status=resp.status_code)
+
+    async def get_file_contributors(self, project_id: str, file_path: str) -> list[str]:
+        """Return GitHub logins of the last 5 committers to file_path."""
+        resp = await self._client.get(
+            f"{self._base}/repos/{project_id}/commits",
+            params={"path": file_path, "per_page": 5},
+        )
+        if resp.status_code in (404, 422):
+            return []
+        resp.raise_for_status()
+        seen: list[str] = []
+        for c in resp.json():
+            login = (c.get("author") or {}).get("login") or c.get("commit", {}).get("author", {}).get("name", "")
+            login = login.strip()
+            if login and login not in seen:
+                seen.append(login)
+        return seen
 
 
 def make_github_client(settings: object) -> GitHubRESTClient:

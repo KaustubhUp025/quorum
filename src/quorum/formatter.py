@@ -71,18 +71,39 @@ class ReportFormatterAgent:
                 # C4 — Reviewer suggestion for CRITICAL findings
                 if finding.severity.value == "CRITICAL" and finding.file_path:
                     try:
-                        contributors = await client.get_file_contributors(
+                        file_contribs = await client.get_file_contributors(
                             project_id, finding.file_path
                         )
-                        if not isinstance(contributors, list):
-                            contributors = []
+                        if not isinstance(file_contribs, list):
+                            file_contribs = []
+
+                        # Fallback: new files have no history — check the parent directory.
+                        # Catches the common case: a new consumer added alongside existing
+                        # consumers that share the same directory expert.
+                        used_dir_fallback = False
+                        contributors = file_contribs
+                        if not contributors:
+                            parent_dir = "/".join(finding.file_path.split("/")[:-1])
+                            if parent_dir:
+                                dir_contribs = await client.get_file_contributors(
+                                    project_id, parent_dir
+                                )
+                                if isinstance(dir_contribs, list) and dir_contribs:
+                                    contributors = dir_contribs
+                                    used_dir_fallback = True
+
                         # Exclude the MR author (not useful to suggest "review your own code")
                         reviewers = [u for u in contributors if isinstance(u, str) and u and u != mr_author]
                         if reviewers:
                             mention = ", ".join(f"@{u}" for u in reviewers[:2])
+                            context = (
+                                f"the `{'/'.join(finding.file_path.split('/')[:-1])}/` directory"
+                                if used_dir_fallback
+                                else f"`{finding.file_path}`"
+                            )
                             body += (
                                 f"\n\n---\n📋 **Suggested reviewer:** {mention} "
-                                f"has recent commits to `{finding.file_path}` — "
+                                f"has recent commits to {context} — "
                                 "consider requesting their review."
                             )
                     except Exception:

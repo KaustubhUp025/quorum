@@ -61,6 +61,10 @@ def main() -> None:
     type=click.Choice(["text", "sarif"], case_sensitive=False),
     help="Output format: 'text' (default) or 'sarif' (SARIF 2.1.0 for GitHub Code Scanning).",
 )
+@click.option(
+    "--force", is_flag=True, default=False,
+    help="Post a new review even if Quorum has already reviewed this MR (bypasses duplicate guard).",
+)
 def review_cmd(
     project_id: str | None,
     mr_iid: int | None,
@@ -70,6 +74,7 @@ def review_cmd(
     list_tools: bool,
     platform: str | None,
     output_format: str,
+    force: bool,
 ) -> None:
     """Review a merge request / pull request for distributed coordination anti-patterns."""
     settings = get_settings()
@@ -114,6 +119,7 @@ def review_cmd(
             rest_only=rest_only,
             platform=effective_platform,
             output_format=output_format,
+            force=force,
         )
     )
 
@@ -143,6 +149,7 @@ async def _async_review(
     rest_only: bool = False,
     platform: str = "gitlab",
     output_format: str = "text",
+    force: bool = False,
 ) -> None:
     from quorum.agent import QuorumAgent
     from quorum.formatter import format_comment
@@ -178,6 +185,7 @@ async def _async_review(
             mr_iid=mr_iid,
             client=client,
             post_comment=post_comment and not dry_run,
+            force=force,
         )
 
         # Auto-file issues when enabled and there are HIGH+ findings
