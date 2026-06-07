@@ -357,6 +357,43 @@ def format_comment(result: ReviewResult) -> str:
     return "\n\n".join(lines)
 
 
+def format_verification_comment(
+    rule_id: str,
+    fix_mr_iid: int,
+    fix_mr_url: str | None,
+    pipeline_status: str,
+    pipeline_url: str | None = None,
+) -> str:
+    """Produce a follow-up comment posted to the original MR after the fix pipeline completes."""
+    mr_ref = f"MR !{fix_mr_iid}"
+    if fix_mr_url:
+        mr_ref += f" · [view fix MR]({fix_mr_url})"
+    pipe_link = f" · [[view pipeline]]({pipeline_url})" if pipeline_url else ""
+
+    if pipeline_status == "success":
+        body = (
+            f"✅ **Fix verified** — CI passes on {mr_ref}{pipe_link}.\n"
+            f"The `{rule_id}` fix is safe to merge."
+        )
+    elif pipeline_status in ("failed", "failure"):
+        body = (
+            f"❌ **Fix needs review** — CI failed on {mr_ref}{pipe_link}.\n"
+            f"The auto-generated `{rule_id}` fix may need adjustment before merging."
+        )
+    elif pipeline_status in ("canceled", "cancelled"):
+        body = (
+            f"⚠️ **Pipeline canceled** on {mr_ref}{pipe_link}.\n"
+            f"Check the `{rule_id}` fix branch manually before merging."
+        )
+    else:
+        body = (
+            f"⏱ **Verification timed out** — CI still running on {mr_ref}.\n"
+            f"Check the pipeline status manually before merging the `{rule_id}` fix."
+        )
+
+    return f"## Quorum · Fix Verification\n\n{body}\n\n{_footer()}"
+
+
 def _footer() -> str:
     return (
         "*Powered by [Quorum](https://github.com/KaustubhUp025/quorum) · "

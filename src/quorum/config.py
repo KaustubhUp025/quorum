@@ -166,6 +166,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Phase D: Fix verification loop ---
+    verify_fix_timeout: int = Field(
+        default=600,
+        ge=60,
+        le=3600,
+        description=(
+            "Maximum seconds to wait for the fix branch CI pipeline before timing out. "
+            "Used by --verify-fix (CLI) and the webhook background poller."
+        ),
+    )
+
     # --- CI failure correlation ---
     correlate_ci: bool = Field(
         default=False,

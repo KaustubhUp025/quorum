@@ -97,7 +97,8 @@ async def _run_review_background(
     mr_iid: int,
     settings: Settings,
 ) -> None:
-    from quorum.agent import QuorumAgent
+    import asyncio as _asyncio
+    from quorum.agent import QuorumAgent, _verify_fix_pipeline
 
     try:
         agent = QuorumAgent(settings)
@@ -109,6 +110,24 @@ async def _run_review_background(
                 client=gitlab,
                 post_comment=True,
             )
+
+            # Phase D: fire-and-forget fix pipeline polling for each fix MR created.
+            # Uses asyncio.create_task so the connect context stays open for polling.
+            fix_findings = [f for f in result.findings if f.fix_mr_iid]
+            if fix_findings and settings.create_fix_mrs:
+                timeout = settings.verify_fix_timeout
+                tasks = [
+                    _asyncio.create_task(
+                        _verify_fix_pipeline(
+                            finding, gitlab, project_id, mr_iid,
+                            timeout_seconds=timeout,
+                        )
+                    )
+                    for finding in fix_findings
+                ]
+                # Await all polling tasks before the connect context closes.
+                await _asyncio.gather(*tasks, return_exceptions=True)
+
         log.info(
             "background_review_complete",
             project_id=project_id,

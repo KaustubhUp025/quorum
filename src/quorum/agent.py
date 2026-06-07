@@ -1100,3 +1100,121 @@ class DeepReasoningAgent:
 
 # Backward-compatible alias — all existing imports and tests continue to work.
 QuorumAgent = DeepReasoningAgent
+
+
+# ---------------------------------------------------------------------------
+# Phase D — Fix pipeline verification (standalone, no Gemini dependency)
+# ---------------------------------------------------------------------------
+
+async def _verify_fix_pipeline(
+    finding: Finding,
+    client: GitLabClientT,
+    project_id: str,
+    original_mr_iid: int,
+    timeout_seconds: int = 600,
+) -> None:
+    """Poll the CI pipeline on the fix branch and post a verification comment.
+
+    Called after `_create_fix_mrs` when the caller opts in via --verify-fix
+    (CLI) or the webhook background task. Posts a ✅/❌ comment on the
+    *original* MR so the author knows whether the auto-fix is safe to merge.
+    """
+    import asyncio as _asyncio
+
+    from quorum.formatter import format_verification_comment
+
+    if not finding.fix_mr_iid:
+        return
+
+    poll_interval = 30
+    elapsed = 0
+
+    log.info(
+        "fix_verification_starting",
+        rule=finding.rule_id,
+        fix_mr_iid=finding.fix_mr_iid,
+        timeout=timeout_seconds,
+    )
+
+    while elapsed < timeout_seconds:
+        await _asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        try:
+            pipelines = await client.get_mr_pipelines(project_id, finding.fix_mr_iid)
+        except Exception as exc:
+            log.warning("fix_verification_poll_failed", error=str(exc), elapsed=elapsed)
+            continue
+
+        if not pipelines:
+            continue
+
+        latest = pipelines[0]
+        status = latest.get("status", "")
+        conclusion = latest.get("conclusion", "")
+        pipeline_url = latest.get("web_url")
+
+        # Normalise GitLab (status="success"|"failed"|"canceled") and
+        # GitHub (status="completed", conclusion="success"|"failure"|"cancelled")
+        # into one of: "success", "failed", "canceled", "running"
+        if status == "success" or (status == "completed" and conclusion == "success"):
+            final_status = "success"
+        elif status == "failed" or (status == "completed" and conclusion in ("failure",)):
+            final_status = "failed"
+        elif status in ("canceled", "cancelled") or (status == "completed" and conclusion == "cancelled"):
+            final_status = "canceled"
+        elif status in ("running", "in_progress", "pending", "created", "waiting_for_resource"):
+            log.info(
+                "fix_pipeline_running",
+                rule=finding.rule_id,
+                fix_mr_iid=finding.fix_mr_iid,
+                status=status,
+                elapsed=elapsed,
+            )
+            continue
+        else:
+            # Unknown / skipped — treat as non-terminal and keep polling
+            continue
+
+        log.info(
+            "fix_pipeline_complete",
+            rule=finding.rule_id,
+            fix_mr_iid=finding.fix_mr_iid,
+            status=final_status,
+        )
+        comment = format_verification_comment(
+            rule_id=finding.rule_id,
+            fix_mr_iid=finding.fix_mr_iid,
+            fix_mr_url=finding.fix_mr_url,
+            pipeline_status=final_status,
+            pipeline_url=pipeline_url,
+        )
+        try:
+            await client.create_workitem_note(project_id, original_mr_iid, comment)
+            log.info(
+                "fix_verification_comment_posted",
+                rule=finding.rule_id,
+                fix_mr_iid=finding.fix_mr_iid,
+                status=final_status,
+            )
+        except Exception as exc:
+            log.warning("fix_verification_comment_failed", error=str(exc))
+        return
+
+    # Timed out — post a timeout notice
+    log.warning(
+        "fix_verification_timeout",
+        rule=finding.rule_id,
+        fix_mr_iid=finding.fix_mr_iid,
+        timeout=timeout_seconds,
+    )
+    comment = format_verification_comment(
+        rule_id=finding.rule_id,
+        fix_mr_iid=finding.fix_mr_iid,
+        fix_mr_url=finding.fix_mr_url,
+        pipeline_status="timeout",
+    )
+    try:
+        await client.create_workitem_note(project_id, original_mr_iid, comment)
+    except Exception as exc:
+        log.warning("fix_verification_timeout_comment_failed", error=str(exc))

@@ -65,6 +65,17 @@ def main() -> None:
     "--force", is_flag=True, default=False,
     help="Post a new review even if Quorum has already reviewed this MR (bypasses duplicate guard).",
 )
+@click.option(
+    "--verify-fix", "verify_fix", is_flag=True, default=False,
+    help=(
+        "After creating a fix MR, poll its CI pipeline and post a ✅/❌ verification comment "
+        "on the original MR when the pipeline completes. Blocks until done or --verify-timeout."
+    ),
+)
+@click.option(
+    "--verify-timeout", "verify_timeout", default=None, type=int, metavar="SECONDS",
+    help="Seconds to wait for fix CI pipeline (default: QUORUM_VERIFY_FIX_TIMEOUT or 600).",
+)
 def review_cmd(
     project_id: str | None,
     mr_iid: int | None,
@@ -75,6 +86,8 @@ def review_cmd(
     platform: str | None,
     output_format: str,
     force: bool,
+    verify_fix: bool,
+    verify_timeout: int | None,
 ) -> None:
     """Review a merge request / pull request for distributed coordination anti-patterns."""
     settings = get_settings()
@@ -120,6 +133,8 @@ def review_cmd(
             platform=effective_platform,
             output_format=output_format,
             force=force,
+            verify_fix=verify_fix,
+            verify_timeout=verify_timeout,
         )
     )
 
@@ -150,6 +165,8 @@ async def _async_review(
     platform: str = "gitlab",
     output_format: str = "text",
     force: bool = False,
+    verify_fix: bool = False,
+    verify_timeout: int | None = None,
 ) -> None:
     from quorum.agent import QuorumAgent
     from quorum.formatter import format_comment
@@ -199,6 +216,22 @@ async def _async_review(
             for fr in filing_results:
                 if fr.url:
                     filed_issue_url = fr.url
+
+        # Phase D: poll fix pipeline and post verification comment (opt-in via --verify-fix)
+        if verify_fix and not dry_run:
+            from quorum.agent import _verify_fix_pipeline
+            fix_findings = [f for f in result.findings if f.fix_mr_iid]
+            if fix_findings:
+                timeout = verify_timeout or settings.verify_fix_timeout
+                _out.print(
+                    f"[cyan]ℹ  --verify-fix: polling fix pipeline for "
+                    f"{len(fix_findings)} fix MR(s) (timeout {timeout}s)…[/cyan]"
+                )
+                for finding in fix_findings:
+                    await _verify_fix_pipeline(
+                        finding, client, project_id, mr_iid,
+                        timeout_seconds=timeout,
+                    )
 
     # SARIF output — write to stdout, skip the rich table
     if output_format == "sarif":
