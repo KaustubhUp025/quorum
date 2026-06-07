@@ -177,6 +177,34 @@ class GitHubRESTClient:
         log.info("github_comment_posted", comment_id=comment_id)
         return json.dumps({"id": comment_id})
 
+    async def create_mr_discussion(
+        self,
+        project_id: str,
+        mr_iid: int,
+        body: str,
+        file_path: str | None = None,
+        line_number: int | None = None,
+        diff_refs: dict | None = None,
+    ) -> str:
+        """Post an inline PR review comment; falls back to top-level note on error."""
+        if file_path and line_number and diff_refs and diff_refs.get("head_sha"):
+            resp = await self._client.post(
+                f"{self._base}/repos/{project_id}/pulls/{mr_iid}/comments",
+                json={
+                    "body": body,
+                    "commit_id": diff_refs["head_sha"],
+                    "path": file_path,
+                    "line": line_number,
+                },
+            )
+            if resp.status_code in (200, 201):
+                comment = resp.json()
+                comment_id = comment.get("id")
+                log.info("github_inline_comment_posted", comment_id=comment_id)
+                return json.dumps({"id": comment_id})
+            log.warning("github_inline_comment_failed_fallback", status=resp.status_code)
+        return await self.create_workitem_note(project_id, mr_iid, body)
+
     async def manage_pipeline(self, project_id: str, pipeline_id: int, action: str) -> str:
         log.warning("manage_pipeline_not_supported_github", action=action)
         return "[GitHub mode: pipeline gating not supported via REST]"

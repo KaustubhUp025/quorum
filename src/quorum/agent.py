@@ -998,9 +998,12 @@ class DeepReasoningAgent:
                     "not be extracted. Please re-run or review manually.\n\n"
                     f"*Error: {parse_error[:200]}*"
                 )
+                await client.create_workitem_note(project_id, mr_iid, comment_body)
             else:
-                comment_body = report_formatter.format(result)
-            await client.create_workitem_note(project_id, mr_iid, comment_body)
+                # Use post_review for inline diff comments + summary (Phase B)
+                await report_formatter.post_review(
+                    result, client, project_id, mr_iid, mr_meta
+                )
 
         return result
 

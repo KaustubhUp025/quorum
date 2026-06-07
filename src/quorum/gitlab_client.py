@@ -74,6 +74,15 @@ class GitLabClient(Protocol):
     ) -> str: ...
     async def get_mr_pipelines(self, project_id: str, mr_iid: int) -> list[dict]: ...
     async def get_pipeline_jobs(self, project_id: str, pipeline_id: int) -> list[dict]: ...
+    async def create_mr_discussion(
+        self,
+        project_id: str,
+        mr_iid: int,
+        body: str,
+        file_path: str | None = None,
+        line_number: int | None = None,
+        diff_refs: dict | None = None,
+    ) -> str: ...
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +299,20 @@ class GitLabGlabMCPClient:
     async def get_mr_metadata(self, project_id: str, mr_iid: int) -> dict:
         assert self._rest is not None
         return await self._rest.get_mr_metadata(project_id, mr_iid)
+
+    async def create_mr_discussion(
+        self,
+        project_id: str,
+        mr_iid: int,
+        body: str,
+        file_path: str | None = None,
+        line_number: int | None = None,
+        diff_refs: dict | None = None,
+    ) -> str:
+        assert self._rest is not None
+        return await self._rest.create_mr_discussion(
+            project_id, mr_iid, body, file_path, line_number, diff_refs
+        )
 
     async def create_branch(self, project_id: str, branch: str, ref: str) -> str:
         assert self._rest is not None
@@ -595,6 +618,20 @@ class GitLabYodaMCPClient:
         assert self._rest is not None
         return await self._rest.get_mr_metadata(project_id, mr_iid)
 
+    async def create_mr_discussion(
+        self,
+        project_id: str,
+        mr_iid: int,
+        body: str,
+        file_path: str | None = None,
+        line_number: int | None = None,
+        diff_refs: dict | None = None,
+    ) -> str:
+        assert self._rest is not None
+        return await self._rest.create_mr_discussion(
+            project_id, mr_iid, body, file_path, line_number, diff_refs
+        )
+
     async def create_branch(self, project_id: str, branch: str, ref: str) -> str:
         assert self._rest is not None
         return await self._rest.create_branch(project_id, branch, ref)
@@ -820,6 +857,40 @@ class GitLabRESTClient:
         log.info("rest_note_posted", note_id=note_id)
         return json.dumps({"id": note_id})
 
+    async def create_mr_discussion(
+        self,
+        project_id: str,
+        mr_iid: int,
+        body: str,
+        file_path: str | None = None,
+        line_number: int | None = None,
+        diff_refs: dict | None = None,
+    ) -> str:
+        """Create a threaded MR discussion. Posts an inline comment when file_path + line_number
+        + diff_refs are provided; falls back to a top-level note on 422 (line not in diff)."""
+        payload: dict = {"body": body}
+        if file_path and line_number and diff_refs:
+            payload["position"] = {
+                "base_sha": diff_refs.get("base_sha", ""),
+                "head_sha": diff_refs.get("head_sha", ""),
+                "start_sha": diff_refs.get("start_sha", ""),
+                "position_type": "text",
+                "new_path": file_path,
+                "new_line": line_number,
+            }
+        resp = await self._client.post(
+            f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}/discussions",
+            json=payload,
+        )
+        if resp.status_code == 422 and "position" in payload:
+            log.warning("inline_comment_422_fallback", file=file_path, line=line_number)
+            return await self.create_workitem_note(project_id, mr_iid, body)
+        resp.raise_for_status()
+        data = resp.json()
+        disc_id = data.get("id", "")
+        log.info("rest_discussion_posted", discussion_id=disc_id, inline=bool("position" in payload))
+        return json.dumps({"id": disc_id})
+
     async def manage_pipeline(self, project_id: str, pipeline_id: int, action: str) -> str:
         log.warning("manage_pipeline_not_supported_in_rest_mode", action=action)
         return "[REST mode: pipeline gating requires GitLab MCP]"
@@ -906,12 +977,16 @@ class GitLabRESTClient:
         )
         resp.raise_for_status()
         mr = resp.json()
+        diff_refs = mr.get("diff_refs") or {}
         return {
             "source_branch": mr.get("source_branch", ""),
             "target_branch": mr.get("target_branch", "main"),
             "web_url": mr.get("web_url", ""),
             "title": mr.get("title", ""),
             "state": mr.get("state", ""),
+            "base_sha": diff_refs.get("base_sha", ""),
+            "head_sha": diff_refs.get("head_sha", ""),
+            "start_sha": diff_refs.get("start_sha", ""),
         }
 
     # ------------------------------------------------------------------
