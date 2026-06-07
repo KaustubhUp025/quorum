@@ -27,8 +27,9 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | `thelabnyc/django-logpipe` | Python | GitLab | `ProvisionedThroughputExceededException` retry uses fixed `time.sleep(5)` — all consumers wake simultaneously under Kinesis throttling | RULE_06 🟠 | [Issue #15](https://gitlab.com/thelabnyc/django-logpipe/-/work_items/15) |
 | `Alexandre_Toto/architecture-event-driven-cdc` | Python | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 🔴 + RULE_10 🔴 | [Issue #1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
 | `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
+| `kamilmazurek/event-driven-architecture-template` | Java | GitLab | `@KafkaListener` on `ITEM_CREATED` topic with no `DeadLetterPublishingRecoverer` or error handler — poison-pill blocks partition. `itemStore.add()` in handler with no idempotency check on `event.getEventId()` — duplicate delivery corrupts store. | RULE_12 🔴 + RULE_13 🔴 | [Issue #1](https://gitlab.com/kamilmazurek/event-driven-architecture-template/-/work_items/1) |
 
-**7 independent open-source projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
+**8 independent open-source projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
 
 ### Multi-language benchmark validation
 
@@ -40,8 +41,9 @@ Validated on four dedicated benchmark MRs in a purpose-built demo repository, co
 | `quorum-hackathon/multi-lang-coordination-demo` | Go | GitLab | `time.Sleep(retryDelay)` — fixed 2s constant, no jitter, thundering herd on inventory service | RULE_06 🟠 | [MR !2](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/2) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Ruby | GitLab | `redis.set(key, "locked")` — static lock value, no fencing token | RULE_01 🔴 | [MR !3](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/3) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Java | GitLab | `Thread.sleep(RETRY_DELAY_MS)` — fixed 3s constant, no jitter on payment gateway retries | RULE_06 🟠 | [MR !4](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/4) |
+| `quorum-hackathon/java-event-driven-benchmark` | Java | GitLab | `new RestTemplate()` without timeout stalls Kafka consumer thread (RULE_14). `@KafkaListener` on payment topic without DLQ (RULE_12). `itemStore.add()` without dedup (RULE_13). Verified Phase B inline diff comments + C3 labels + C4 reviewer suggestion via directory fallback. | RULE_14 🔴 + RULE_13 🔴 + RULE_12 🟠 | [MR !1](https://gitlab.com/quorum-hackathon/java-event-driven-benchmark/-/merge_requests/1) |
 
-All 4 review comments posted live. RULE_07 and RULE_11 correctly PASS on the Java MR (catch-block retry ≠ test sleep, re-interrupt is the correct Go idiom).
+All review comments posted live. RULE_07 and RULE_11 correctly PASS on the Java MRs (catch-block retry ≠ test sleep, re-interrupt is the correct Go idiom).
 
 ### True-negative validation on GitLab's own infrastructure
 
@@ -103,8 +105,15 @@ MR / PR opened
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Stage 3 — ReportFormatterAgent                                      │
 │                                                                      │
-│  · Formats findings as structured Markdown comment                   │
-│  · Posts comment to MR / PR                                          │
+│  · Duplicate guard — skips if Quorum already reviewed this MR       │
+│    (--force to override)                                             │
+│  · Language-aware suppression — mutes Java-only rules on Python     │
+│    projects, Go-only rules on pure-Go projects                      │
+│  · Posts one inline diff comment per finding (Phase B)              │
+│  · Posts one summary table comment linking to all inline threads    │
+│  · For CRITICAL findings: suggests reviewer from file/dir history   │
+│    via GitLab commit API (C4 — directory fallback for new files)    │
+│  · Applies MR label: quorum-review or quorum-review::critical       │
 │  · For CRITICAL findings (opt-in): generates corrected file,        │
 │    creates branch, commits fix, opens a DRAFT fix MR                │
 │  · Outputs SARIF 2.1.0 (--format sarif) for GitHub Code Scanning    │
@@ -152,7 +161,7 @@ The surface detector fires on coordination patterns across **6 languages**. Gemi
 | **Ruby** | RULE_01 (redis.setnx), RULE_06 (sleep), RULE_08 (karafka), RULE_10 (find/find_by) |
 | **Rust / .NET** | RULE_06 (tokio::time::sleep / Task.Delay), RULE_01 (LockTake/StringSet), RULE_08 (Confluent .NET), RULE_09 (SaveChangesAsync) |
 
-Real-world validated on open-source projects: Python (5), Java (1), Go (1). TypeScript and Ruby validated via dedicated benchmark MRs.
+Real-world validated on open-source projects: Python (5), Java (2), Go (1). TypeScript and Ruby validated via dedicated benchmark MRs.
 
 ---
 
@@ -218,6 +227,47 @@ quorum review --platform github \
 ```
 
 Uses GitHub REST API (`QUORUM_GITHUB_TOKEN`). `project_id` is `owner/repo`, `mr-iid` is the PR number.
+
+---
+
+## Review quality features
+
+### Inline diff comments (Phase B)
+
+Each non-PASS finding is posted as an **inline discussion thread** on the exact diff line, so the code context is visible alongside the finding. A compact summary table is always posted as a top-level note with `↗` markers linking to the inline threads.
+
+### Duplicate guard (Phase C1)
+
+If Quorum has already reviewed the MR, a second run is a no-op. The guard checks for the `Quorum · Distributed Coordination Review` fingerprint in existing notes before posting.
+
+```bash
+quorum review --force  # bypass the duplicate guard
+```
+
+Or set `force_review: true` in `.quorum.yml`.
+
+### Language-aware rule suppression (Phase C2)
+
+Rules that only apply to specific languages are automatically suppressed when those languages aren't present in the project. For example, `RULE_05` (Java-only) is muted on a pure Python repo; `RULE_03` is muted on a Go-dominant repo.
+
+### MR label application (Phase C3)
+
+After posting, Quorum applies a label to the MR:
+
+| Outcome | Label applied |
+|---|---|
+| CRITICAL findings present | `quorum-review::critical` |
+| No critical findings | `quorum-review` |
+
+Set `apply_labels: false` in `.quorum.yml` to disable.
+
+### Reviewer suggestion (Phase C4)
+
+For each CRITICAL finding, Quorum queries the GitLab commit history for the affected file and mentions up to 2 recent contributors as suggested reviewers. For new files with no commit history, it falls back to the parent directory's contributors.
+
+```
+📋 Suggested reviewer: @alice has recent commits to the `src/consumer/` directory — consider requesting their review.
+```
 
 ---
 
@@ -615,7 +665,7 @@ For organisations deploying Quorum as a shared service (GitHub App / GitLab App)
 ```bash
 pip install -e ".[dev]"
 
-pytest                     # run all 156 tests
+pytest                     # run all 204 tests
 ruff check src/ tests/     # lint
 mypy src/                  # type check
 ```
