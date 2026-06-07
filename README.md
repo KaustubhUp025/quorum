@@ -28,8 +28,9 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | `Alexandre_Toto/architecture-event-driven-cdc` | Python | GitLab | `enable_auto_commit=True` in payment Kafka consumer + lost update on balance | RULE_08 🔴 + RULE_10 🔴 | [Issue #1](https://gitlab.com/Alexandre_Toto/architecture-event-driven-cdc/-/work_items/1) |
 | `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
 | `kamilmazurek/event-driven-architecture-template` | Java | GitLab | `@KafkaListener` on `ITEM_CREATED` topic with no `DeadLetterPublishingRecoverer` or error handler — poison-pill blocks partition. `itemStore.add()` in handler with no idempotency check on `event.getEventId()` — duplicate delivery corrupts store. | RULE_12 🔴 + RULE_13 🔴 | [Issue #1](https://gitlab.com/kamilmazurek/event-driven-architecture-template/-/work_items/1) |
+| `TeskaLabs/asab-iris` | Python | GitHub | "Retry Kafka consumer" PR: `delay = min(delay * 2, max_delay)` with no jitter — thundering herd on recovery. `AIOKafkaConsumer` catches all exceptions but has no DLQ — poison-pill messages are silently dropped. | RULE_06 🟠 + RULE_12 🟠 | [PR #122 review](https://github.com/TeskaLabs/asab-iris/pull/122#issuecomment-4643045308) |
 
-**8 independent open-source projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
+**9 independent open-source projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
 
 ### Multi-language benchmark validation
 
