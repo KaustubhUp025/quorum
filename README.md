@@ -41,7 +41,8 @@ Validated on four dedicated benchmark MRs in a purpose-built demo repository, co
 | `quorum-hackathon/multi-lang-coordination-demo` | Go | GitLab | `time.Sleep(retryDelay)` — fixed 2s constant, no jitter, thundering herd on inventory service | RULE_06 🟠 | [MR !2](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/2) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Ruby | GitLab | `redis.set(key, "locked")` — static lock value, no fencing token | RULE_01 🔴 | [MR !3](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/3) |
 | `quorum-hackathon/multi-lang-coordination-demo` | Java | GitLab | `Thread.sleep(RETRY_DELAY_MS)` — fixed 3s constant, no jitter on payment gateway retries | RULE_06 🟠 | [MR !4](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/4) |
-| `quorum-hackathon/java-event-driven-benchmark` | Java | GitLab | `new RestTemplate()` without timeout stalls Kafka consumer thread (RULE_14). `@KafkaListener` on payment topic without DLQ (RULE_12). `itemStore.add()` without dedup (RULE_13). Verified Phase B inline diff comments + C3 labels + C4 reviewer suggestion via directory fallback. | RULE_14 🔴 + RULE_13 🔴 + RULE_12 🟠 | [MR !1](https://gitlab.com/quorum-hackathon/java-event-driven-benchmark/-/merge_requests/1) |
+| `quorum-hackathon/java-event-driven-benchmark` | Java | GitLab | `new RestTemplate()` without timeout stalls Kafka consumer thread (RULE_14). `@KafkaListener` on payment topic without DLQ (RULE_12). `itemStore.add()` without dedup (RULE_13). Verified Phase B inline diff comments + C3 labels + C4 reviewer suggestion via directory fallback. Phase D: fix MR !4 created → CI `success` → ✅ verified. | RULE_14 🔴 + RULE_13 🔴 + RULE_12 🟠 | [MR !1](https://gitlab.com/quorum-hackathon/java-event-driven-benchmark/-/merge_requests/1) |
+| `KaustubhUp025/quorum-github-demo` | Python | GitHub | `requests.post()` with no timeout (RULE_14). `time.sleep(RETRY_DELAY)` fixed delay (RULE_06). Kafka consumer with no DLQ on failure (RULE_12). Phase D: fix PR #4 created → GitHub Actions `success` → ✅ verified. Full GitHub agentic loop end-to-end. | RULE_12 🔴 + RULE_06 🟠 + RULE_14 🟠 | [PR #1](https://github.com/KaustubhUp025/quorum-github-demo/pull/1) |
 
 All review comments posted live. RULE_07 and RULE_11 correctly PASS on the Java MRs (catch-block retry ≠ test sleep, re-interrupt is the correct Go idiom).
 
@@ -118,6 +119,21 @@ MR / PR opened
 │    creates branch, commits fix, opens a DRAFT fix MR                │
 │  · Outputs SARIF 2.1.0 (--format sarif) for GitHub Code Scanning    │
 │  · Exits 1 to block merge if CRITICAL findings found                │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │ fix MR created (opt-in)
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Stage 4 — Verification Loop  (--verify-fix, opt-in)                │
+│                                                                      │
+│  Polls the CI pipeline on the fix branch every 30 s.                │
+│  On completion, posts a follow-up comment to the original MR:       │
+│                                                                      │
+│  ✅ Fix verified — CI passes · The RULE_XX fix is safe to merge.    │
+│  ❌ Fix needs review — CI failed · Adjust before merging.           │
+│  ⚠️  Pipeline canceled · Check manually before merging.             │
+│  ⏱ Verification timed out · Check pipeline status manually.        │
+│                                                                      │
+│  Closes the agentic loop: read state → decide → act → verify        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -268,6 +284,29 @@ For each CRITICAL finding, Quorum queries the GitLab commit history for the affe
 ```
 📋 Suggested reviewer: @alice has recent commits to the `src/consumer/` directory — consider requesting their review.
 ```
+
+### Verification loop (Phase D)
+
+After a fix MR is created, Quorum doesn't stop. Pass `--verify-fix` and it polls the CI pipeline on the fix branch, then posts a follow-up comment on the **original** MR when CI finishes:
+
+```bash
+QUORUM_CREATE_FIX_MRS=true \
+quorum review --project-id myorg/myrepo --mr-iid 42 \
+  --verify-fix --verify-timeout 300
+```
+
+| CI result | Comment posted |
+|---|---|
+| ✅ success | `Fix verified — CI passes on MR !N. Safe to merge.` |
+| ❌ failure | `Fix needs review — CI failed on MR !N. Adjust before merging.` |
+| ⚠️ canceled | `Pipeline canceled on MR !N. Check manually.` |
+| ⏱ timeout | `Verification timed out. Check pipeline status manually.` |
+
+Works on both GitLab (pipeline status API) and GitHub (Actions workflow runs API). Timeout defaults to 600 s, configurable via `QUORUM_VERIFY_FIX_TIMEOUT`.
+
+Live validated:
+- GitLab: `quorum-hackathon/java-event-driven-benchmark` MR !1 → fix MR !4 → pipeline `success` → ✅ [comment](https://gitlab.com/quorum-hackathon/java-event-driven-benchmark/-/merge_requests/1#note_3430520706)
+- GitHub: `KaustubhUp025/quorum-github-demo` PR #1 → fix PR #4 → Actions `success` → ✅ [comment](https://github.com/KaustubhUp025/quorum-github-demo/pull/1#issuecomment-4643636819)
 
 ---
 
@@ -538,6 +577,7 @@ All settings use the `QUORUM_` prefix (e.g. `QUORUM_GITLAB_TOKEN`).
 | `QUORUM_DISABLED_RULES` | — | Comma-separated rule IDs to skip (e.g. `RULE_07,RULE_08`) |
 | `QUORUM_CREATE_FIX_MRS` | `false` | Auto-open draft fix MRs for CRITICAL findings |
 | `QUORUM_FIX_MR_MAX_COUNT` | `1` | Max fix MRs opened per review |
+| `QUORUM_VERIFY_FIX_TIMEOUT` | `600` | Seconds to poll fix branch CI before timing out (used by `--verify-fix`) |
 | `QUORUM_CORRELATE_CI` | `false` | Check failing CI pipeline and correlate with findings |
 | `QUORUM_WEBHOOK_SECRET` | — | HMAC secret for validating incoming GitLab/GitHub webhooks |
 | `QUORUM_AUTO_FILE_ISSUES` | `false` | Auto-file issues after every `quorum review` (opt-in) |
@@ -665,7 +705,7 @@ For organisations deploying Quorum as a shared service (GitHub App / GitLab App)
 ```bash
 pip install -e ".[dev]"
 
-pytest                     # run all 204 tests
+pytest                     # run all 223 tests
 ruff check src/ tests/     # lint
 mypy src/                  # type check
 ```
