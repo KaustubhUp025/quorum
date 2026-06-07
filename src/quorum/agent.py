@@ -234,6 +234,58 @@ def _parse_findings(raw: dict[str, Any]) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Phase C helpers
+# ---------------------------------------------------------------------------
+
+_QUORUM_FINGERPRINT = "Quorum · Distributed Coordination Review"
+
+# Rules that only apply when a specific language is present.
+# Key = language; value = rule IDs to suppress when that language is absent.
+_RULE_REQUIRES_LANGUAGE: dict[str, list[str]] = {
+    "RULE_05": ["Java"],  # @Transactional is a Java/Spring annotation
+}
+
+# Additional suppressions when a language is the dominant one (>50%)
+_DOMINANT_LANG_SUPPRESSIONS: dict[str, list[str]] = {
+    "Go": ["RULE_03"],   # Saga orchestrators are rare in pure-Go services
+}
+
+
+async def _already_reviewed(client: Any, project_id: str, mr_iid: int) -> bool:
+    """Return True if Quorum has already posted a review comment on this MR."""
+    try:
+        notes = await client.list_mr_notes(project_id, mr_iid)
+        if not isinstance(notes, list):
+            return False
+        return any(_QUORUM_FINGERPRINT in (n.get("body") or "") for n in notes if isinstance(n, dict))
+    except Exception:
+        return False  # If we can't check, allow the review to proceed
+
+
+def _get_language_suppressions(languages: dict[str, float]) -> set[str]:
+    """Return rule IDs to suppress based on the project's language breakdown."""
+    if not isinstance(languages, dict) or not languages:
+        return set()
+
+    suppressed: set[str] = set()
+
+    # Suppress rules that require a language that's absent from the project
+    for rule_id, required_langs in _RULE_REQUIRES_LANGUAGE.items():
+        if not any(lang in languages for lang in required_langs):
+            suppressed.add(rule_id)
+
+    # Additional suppressions when a language is dominant (>50% of code)
+    try:
+        dominant = max(languages, key=languages.get)  # type: ignore[arg-type]
+        if languages[dominant] > 50.0:
+            suppressed.update(_DOMINANT_LANG_SUPPRESSIONS.get(dominant, []))
+    except (ValueError, TypeError):
+        pass
+
+    return suppressed
+
+
+# ---------------------------------------------------------------------------
 # Stage 2 — DeepReasoningAgent
 # ---------------------------------------------------------------------------
 
@@ -875,8 +927,25 @@ class DeepReasoningAgent:
         mr_iid: int,
         client: GitLabClientT,
         post_comment: bool = True,
+        force: bool = False,
     ) -> ReviewResult:
         log.info("review_started", project_id=project_id, mr_iid=mr_iid)
+
+        # ── C1: Duplicate Discussion Guard ───────────────────────────
+        if post_comment and not force and not self._settings.force_review:
+            already = await _already_reviewed(client, project_id, mr_iid)
+            if already:
+                log.warning(
+                    "review_skipped_already_reviewed",
+                    hint="Use --force to post a new review anyway",
+                )
+                return ReviewResult(
+                    mr_iid=mr_iid,
+                    project_id=project_id,
+                    surfaces_detected=0,
+                    rules_checked=0,
+                    blocked=False,
+                )
 
         # Fetch diff and MR metadata
         diff_raw = await client.get_merge_request_diffs(project_id, mr_iid)
@@ -884,11 +953,20 @@ class DeepReasoningAgent:
         source_branch = mr_meta.get("source_branch", "")
         target_branch = mr_meta.get("target_branch", "main")
 
+        # ── C2: Language-Aware Rule Filtering ────────────────────────
+        try:
+            languages = await client.get_project_languages(project_id)
+        except Exception:
+            languages = {}
+        lang_suppressed = _get_language_suppressions(languages)
+        if lang_suppressed:
+            log.info("language_suppressions", languages=list(languages.keys())[:5], suppressed=sorted(lang_suppressed))
+
         # ── Stage 1: SurfaceDetectorAgent ────────────────────────────
         surface_detector = SurfaceDetectorAgent()
         triggered_rules = surface_detector.detect(diff_raw)
 
-        disabled = {r.upper() for r in (self._settings.disabled_rules or [])}
+        disabled = {r.upper() for r in (self._settings.disabled_rules or [])} | lang_suppressed
         if disabled:
             before = len(triggered_rules)
             triggered_rules = [r for r in triggered_rules if r.id not in disabled]
@@ -1004,6 +1082,18 @@ class DeepReasoningAgent:
                 await report_formatter.post_review(
                     result, client, project_id, mr_iid, mr_meta
                 )
+
+            # ── C3: MR Label Application ─────────────────────────────
+            if self._settings.apply_labels:
+                try:
+                    label = (
+                        "quorum-review::critical"
+                        if result.critical_count > 0
+                        else "quorum-review"
+                    )
+                    await client.apply_mr_labels(project_id, mr_iid, [label])
+                except Exception as exc:
+                    log.warning("label_application_failed", error=str(exc)[:100])
 
         return result
 

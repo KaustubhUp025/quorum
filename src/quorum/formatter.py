@@ -62,9 +62,32 @@ class ReportFormatterAgent:
         non_pass = [f for f in sorted_findings if f.severity != Severity.PASS]
         pass_findings = [f for f in sorted_findings if f.severity == Severity.PASS]
 
+        mr_author = mr_meta.get("author", "")
+
         for finding in non_pass:
             if finding.file_path and finding.line_number and has_diff_refs:
                 body = _inline_comment_body(finding)
+
+                # C4 — Reviewer suggestion for CRITICAL findings
+                if finding.severity.value == "CRITICAL" and finding.file_path:
+                    try:
+                        contributors = await client.get_file_contributors(
+                            project_id, finding.file_path
+                        )
+                        if not isinstance(contributors, list):
+                            contributors = []
+                        # Exclude the MR author (not useful to suggest "review your own code")
+                        reviewers = [u for u in contributors if isinstance(u, str) and u and u != mr_author]
+                        if reviewers:
+                            mention = ", ".join(f"@{u}" for u in reviewers[:2])
+                            body += (
+                                f"\n\n---\n📋 **Suggested reviewer:** {mention} "
+                                f"has recent commits to `{finding.file_path}` — "
+                                "consider requesting their review."
+                            )
+                    except Exception:
+                        pass  # Contributor lookup is best-effort; never block posting
+
                 await client.create_mr_discussion(
                     project_id,
                     mr_iid,
