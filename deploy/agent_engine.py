@@ -37,6 +37,27 @@ def build_sdist(repo_root: Path) -> Path:
     return latest
 
 
+def ensure_staging_bucket(project: str, region: str, bucket_name: str) -> str:
+    """Create the GCS staging bucket if it doesn't already exist."""
+    result = subprocess.run(
+        ["gcloud", "storage", "buckets", "describe", f"gs://{bucket_name}",
+         "--project", project],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        print(f"==> Creating staging bucket: gs://{bucket_name}")
+        subprocess.run(
+            ["gcloud", "storage", "buckets", "create", f"gs://{bucket_name}",
+             "--project", project,
+             "--location", region,
+             "--uniform-bucket-level-access"],
+            check=True,
+        )
+    else:
+        print(f"==> Using existing staging bucket: gs://{bucket_name}")
+    return f"gs://{bucket_name}"
+
+
 def deploy(project: str, region: str, sdist_path: Path | None = None) -> str:
     import vertexai
     from vertexai.preview import reasoning_engines
@@ -44,7 +65,12 @@ def deploy(project: str, region: str, sdist_path: Path | None = None) -> str:
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
     from quorum.reasoning_engine_app import QuorumReasoningEngine
 
-    vertexai.init(project=project, location=region)
+    # GCS bucket used to stage the sdist + requirements before Agent Engine picks them up.
+    # Name is derived from the project ID (globally unique, ≤63 chars).
+    bucket_name = f"quorum-ae-staging-{project}"[:63]
+    staging_bucket = ensure_staging_bucket(project, region, bucket_name)
+
+    vertexai.init(project=project, location=region, staging_bucket=staging_bucket)
 
     print(f"==> Deploying to Agent Engine ({project} / {region})...")
     print("    This uploads the package and provisions the engine — takes ~3 minutes.")
