@@ -2,7 +2,7 @@ FROM python:3.12-slim AS base
 
 WORKDIR /app
 
-# Install Node.js (LTS) for the yoda-digital MCP server subprocess.
+# Install Node.js (LTS) for the @zereight/mcp-gitlab MCP server subprocess.
 # Pre-install the package globally so the first review has no download latency.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nodejs \
@@ -14,13 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv for fast Python dependency installation
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy dependency metadata first for layer caching
-# README.md is required by hatchling (listed as readme in pyproject.toml)
+# Copy the full package source before installing.
+# hatchling (the build backend) needs src/quorum/ present to build a real wheel.
+# pyproject.toml and README.md are also required by hatchling at build time.
 COPY pyproject.toml README.md ./
-RUN uv pip install --system --no-cache .
-
-# Copy source
 COPY src/ ./src/
+RUN uv pip install --system --no-cache .
 
 # Non-root user
 RUN useradd --create-home --shell /bin/bash quorum
