@@ -2,10 +2,10 @@
 """Deploy Quorum's DeepReasoningAgent to Vertex AI Agent Engine.
 
 Usage:
-    python deploy/agent_engine.py --project gen-lang-client-0294573094 [--build]
+    python deploy/agent_engine.py --project gen-lang-client-0294573094
 
 Prerequisites:
-    pip install build
+    pip install cloudpickle google-cloud-aiplatform[agent_engines]
     gcloud auth login
     gcloud auth application-default login
 
@@ -19,22 +19,6 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-
-
-def build_sdist(repo_root: Path) -> Path:
-    """Build a source distribution to bundle into the Agent Engine image."""
-    print("==> Building source distribution...")
-    subprocess.run(
-        [sys.executable, "-m", "build", "--sdist", "--outdir", str(repo_root / "dist")],
-        cwd=repo_root,
-        check=True,
-    )
-    sdists = sorted((repo_root / "dist").glob("quorum-*.tar.gz"))
-    if not sdists:
-        raise RuntimeError("No sdist found after build. Is 'build' installed? pip install build")
-    latest = sdists[-1]
-    print(f"    Built: {latest.name}")
-    return latest
 
 
 def ensure_staging_bucket(project: str, region: str, bucket_name: str) -> str:
@@ -58,14 +42,14 @@ def ensure_staging_bucket(project: str, region: str, bucket_name: str) -> str:
     return f"gs://{bucket_name}"
 
 
-def deploy(project: str, region: str, sdist_path: Path | None = None) -> str:
+def deploy(project: str, region: str) -> str:
     import vertexai
     from vertexai.preview import reasoning_engines
 
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
     from quorum.reasoning_engine_app import QuorumReasoningEngine
 
-    # GCS bucket used to stage the sdist + requirements before Agent Engine picks them up.
+    # GCS bucket for staging the quorum package + requirements before Agent Engine picks them up.
     # Name is derived from the project ID (globally unique, ≤63 chars).
     bucket_name = f"quorum-ae-staging-{project}"[:63]
     staging_bucket = ensure_staging_bucket(project, region, bucket_name)
@@ -75,12 +59,17 @@ def deploy(project: str, region: str, sdist_path: Path | None = None) -> str:
     print(f"==> Deploying to Agent Engine ({project} / {region})...")
     print("    This uploads the package and provisions the engine — takes ~3 minutes.")
 
-    extra_packages: list[str] = [str(sdist_path)] if sdist_path else []
-
     # Runtime requirements: everything quorum needs at inference time.
     # google-cloud-aiplatform is pre-installed in the Agent Engine runtime.
     # fastapi / uvicorn are not needed (Agent Engine is not a web server).
+    #
+    # quorum itself is installed from GitHub: the vertexai SDK's extra_packages
+    # mechanism tars files with their full absolute path (e.g.
+    # home/user/project/src/quorum/__init__.py) so the extraction never lands in
+    # a directory that's on PYTHONPATH. Using git+https installs quorum into the
+    # container's venv directly, which is always on sys.path.
     requirements = [
+        "quorum @ git+https://github.com/KaustubhUp025/quorum.git",
         "google-genai>=2.6.0",
         "pydantic>=2.13.4",
         "pydantic-settings>=2.14.1",
@@ -103,7 +92,7 @@ def deploy(project: str, region: str, sdist_path: Path | None = None) -> str:
             "(Gemini 2.5 Pro) → ReportFormatterAgent. Detects distributed systems "
             "coordination bugs in GitLab MRs and GitHub PRs."
         ),
-        extra_packages=extra_packages,
+        # No extra_packages needed — quorum is in requirements as a git+https URL.
         # Pin to Python 3.10 — matches the local dev environment and pyproject.toml
         # requires-python = ">=3.10".
         sys_version="3.10",
@@ -137,26 +126,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Deploy Quorum to Vertex AI Agent Engine")
     parser.add_argument("--project", required=True, help="GCP project ID")
     parser.add_argument("--region", default="us-central1")
-    parser.add_argument(
-        "--build",
-        action="store_true",
-        help="Build a source distribution first (requires: pip install build)",
-    )
-    parser.add_argument(
-        "--sdist",
-        help="Path to an existing .tar.gz sdist (skips --build)",
-    )
     args = parser.parse_args()
 
-    repo_root = Path(__file__).parent.parent
-
-    sdist_path: Path | None = None
-    if args.sdist:
-        sdist_path = Path(args.sdist)
-    elif args.build:
-        sdist_path = build_sdist(repo_root)
-
-    deploy(args.project, args.region, sdist_path)
+    deploy(args.project, args.region)
 
 
 if __name__ == "__main__":
