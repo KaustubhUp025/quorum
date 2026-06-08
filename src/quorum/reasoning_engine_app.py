@@ -102,6 +102,9 @@ class QuorumReasoningEngine:
                   confidence, title, explanation, file_path, line_number,
                   suggested_fix, reference)
         """
+        # Agent Engine serializes all numeric args as JSON float (e.g. mr_iid=1.0),
+        # which breaks GitLab API URLs. Cast to int at the boundary.
+        mr_iid = int(mr_iid)
         # Agent Engine serves requests inside a running uvicorn event loop, so
         # asyncio.run() raises "cannot be called from a running event loop".
         # Run the coroutine in a fresh thread (no existing loop there).
