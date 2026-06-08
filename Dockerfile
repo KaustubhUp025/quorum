@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy dependency metadata first for layer caching
-COPY pyproject.toml ./
+# README.md is required by hatchling (listed as readme in pyproject.toml)
+COPY pyproject.toml README.md ./
 RUN uv pip install --system --no-cache .
 
 # Copy source

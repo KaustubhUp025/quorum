@@ -1,0 +1,30 @@
+# Never include credentials or local state in the Docker build context
+.env
+.env.*
+!.env.example
+
+# Private session notes
+.context/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Tests not needed at runtime
+tests/
+
+# IDE / OS
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*~
