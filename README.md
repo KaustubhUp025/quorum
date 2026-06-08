@@ -61,6 +61,33 @@ A full Quorum review comment was also posted on `gitlab-org/gitaly` !8812 (note_
 
 ---
 
+## Live deployment
+
+| Surface | URL |
+|---|---|
+| **Cloud Run webhook** | `https://quorum-3fnjzg6adq-uc.a.run.app` · [health](https://quorum-3fnjzg6adq-uc.a.run.app/health) |
+| **Vertex AI Agent Engine playground** | [Open in Google Cloud Console](https://console.cloud.google.com/vertex-ai/reasoning-engines/7698207022373666816?project=gen-lang-client-0294573094) |
+
+The Agent Engine can be queried directly from Python (no webhook setup required):
+
+```python
+import vertexai
+from vertexai.preview import reasoning_engines
+
+vertexai.init(project='gen-lang-client-0294573094', location='us-central1')
+engine = reasoning_engines.ReasoningEngine(
+    'projects/803239892746/locations/us-central1/reasoningEngines/7698207022373666816'
+)
+result = engine.query(
+    project_id='quorum-hackathon/quorum-demo',
+    mr_iid=1,
+    dry_run=True,          # set False to post the review comment
+)
+print(result['summary'])   # 5 coordination bugs, all at 100% confidence
+```
+
+---
+
 ## How it works
 
 Quorum runs as a three-stage agent pipeline:
