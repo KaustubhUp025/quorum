@@ -101,6 +101,19 @@ for SECRET in quorum-gitlab-token quorum-gemini-key quorum-github-token quorum-w
   echo "    OK ${SECRET}"
 done
 
+# Agent Engine uses a separate service agent SA — it reads secrets via Secret Manager
+# from inside set_up() rather than env vars.
+AE_SA="service-${PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
+echo "==> Granting Agent Engine SA (${AE_SA}) access to secrets..."
+for SECRET in quorum-gemini-key quorum-gitlab-token quorum-github-token; do
+  gcloud secrets add-iam-policy-binding "${SECRET}" \
+    --member "serviceAccount:${AE_SA}" \
+    --role "roles/secretmanager.secretAccessor" \
+    --project "${PROJECT_ID}" \
+    --quiet
+  echo "    OK ${SECRET}"
+done
+
 echo "==> Granting Cloud Run SA permission to call Vertex AI..."
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member "serviceAccount:${CLOUD_RUN_SA}" \

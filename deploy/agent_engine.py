@@ -70,6 +70,7 @@ def deploy(project: str, region: str) -> str:
     # container's venv directly, which is always on sys.path.
     requirements = [
         "quorum @ git+https://github.com/KaustubhUp025/quorum.git",
+        "google-cloud-secret-manager>=2.0.0",
         "google-genai>=2.6.0",
         "pydantic>=2.13.4",
         "pydantic-settings>=2.14.1",

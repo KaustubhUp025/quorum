@@ -15,6 +15,43 @@ import asyncio
 import os
 
 
+def _gcp_project_from_metadata() -> str:
+    import urllib.request
+    req = urllib.request.Request(
+        "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    return urllib.request.urlopen(req, timeout=2).read().decode()
+
+
+def _pull_secrets_from_manager() -> None:
+    """Populate env vars from Secret Manager using the engine SA's ADC credentials.
+
+    Agent Engine does not mount Secret Manager secrets as env vars automatically.
+    Called in set_up() so all workers have credentials before serving queries.
+    Requires the Agent Engine SA to have roles/secretmanager.secretAccessor
+    on each secret (see deploy/setup_gcp.sh).
+    """
+    from google.cloud import secretmanager
+
+    project = os.getenv("GOOGLE_CLOUD_PROJECT") or _gcp_project_from_metadata()
+    client = secretmanager.SecretManagerServiceClient()
+
+    for env_var, secret_id in [
+        ("QUORUM_GEMINI_API_KEY", "quorum-gemini-key"),
+        ("QUORUM_GITLAB_TOKEN", "quorum-gitlab-token"),
+        ("QUORUM_GITHUB_TOKEN", "quorum-github-token"),
+    ]:
+        if os.getenv(env_var):
+            continue
+        try:
+            name = f"projects/{project}/secrets/{secret_id}/versions/latest"
+            resp = client.access_secret_version(request={"name": name})
+            os.environ[env_var] = resp.payload.data.decode()
+        except Exception:
+            pass  # optional secrets (e.g. github token) are fine to skip
+
+
 class QuorumReasoningEngine:
     """Vertex AI Agent Engine app wrapping Quorum's three-stage pipeline.
 
@@ -23,13 +60,21 @@ class QuorumReasoningEngine:
     """
 
     def set_up(self) -> None:
-        """Called once after the engine is deployed. Validate config."""
+        """Called once per worker at engine startup. Load secrets and validate config."""
+        # Agent Engine does not inject Secret Manager values as env vars.
+        # Pull them now so every subsequent query() call has credentials.
+        if not os.getenv("QUORUM_GEMINI_API_KEY") and not os.getenv("QUORUM_USE_VERTEX_AI"):
+            _pull_secrets_from_manager()
+
         from quorum.config import Settings
-        # Validate that required secrets are reachable
         s = Settings()
-        assert s.gemini_api_key or s.use_vertex_ai, (
-            "QUORUM_GEMINI_API_KEY or QUORUM_USE_VERTEX_AI must be set"
-        )
+        if not (s.gemini_api_key or s.use_vertex_ai):
+            raise RuntimeError(
+                "QUORUM_GEMINI_API_KEY or QUORUM_USE_VERTEX_AI must be set. "
+                "Grant the Agent Engine SA "
+                "(service-<PROJECT_NUMBER>@gcp-sa-aiplatform-re.iam.gserviceaccount.com) "
+                "roles/secretmanager.secretAccessor on the quorum secrets."
+            )
 
     def query(
         self,
