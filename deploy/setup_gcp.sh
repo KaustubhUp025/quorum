@@ -4,6 +4,7 @@
 # Run this ONCE before the first Cloud Run or Agent Engine deployment.
 #
 # Usage: ./deploy/setup_gcp.sh <GCP_PROJECT_ID> [REGION]
+#   e.g. ./deploy/setup_gcp.sh gen-lang-client-0294573094
 #
 # Prerequisites:
 #   gcloud auth login
@@ -14,7 +15,6 @@ set -euo pipefail
 PROJECT_ID="${1:?Usage: $0 <GCP_PROJECT_ID> [REGION]}"
 REGION="${2:-us-central1}"
 
-# Load .env — only extract the three secret values (never echo them)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/../.env"
 
@@ -24,7 +24,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-# Source .env quietly (values stay in env vars, never printed)
+# Source .env quietly (values stay in shell env vars, never printed or written to files)
 set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
@@ -33,11 +33,11 @@ set +a
 echo "==> Configuring project: ${PROJECT_ID}"
 gcloud config set project "${PROJECT_ID}" --quiet
 
-echo "==> Enabling required APIs..."
+echo "==> Enabling required APIs (this may take 1-2 minutes)..."
 gcloud services enable \
   run.googleapis.com \
   secretmanager.googleapis.com \
-  containerregistry.googleapis.com \
+  artifactregistry.googleapis.com \
   aiplatform.googleapis.com \
   --project "${PROJECT_ID}" \
   --quiet
@@ -57,7 +57,10 @@ _upsert_secret() {
     echo "    UPDATED ${name}"
   else
     printf '%s' "${value}" \
-      | gcloud secrets create "${name}" --data-file=- --project "${PROJECT_ID}" --quiet
+      | gcloud secrets create "${name}" \
+          --data-file=- \
+          --replication-policy="automatic" \
+          --project "${PROJECT_ID}" --quiet
     echo "    CREATED ${name}"
   fi
 }
@@ -66,48 +69,58 @@ _upsert_secret "quorum-gitlab-token"  "${QUORUM_GITLAB_TOKEN:-}"
 _upsert_secret "quorum-gemini-key"    "${QUORUM_GEMINI_API_KEY:-}"
 _upsert_secret "quorum-github-token"  "${QUORUM_GITHUB_TOKEN:-}"
 
-# Optional webhook secret — generate one if not set
+# Generate webhook secret if not already in .env
 if [[ -z "${QUORUM_WEBHOOK_SECRET:-}" ]]; then
   WEBHOOK_SECRET="$(openssl rand -hex 32)"
-  echo "    NOTE: QUORUM_WEBHOOK_SECRET not set in .env; generating random value."
-  echo "    Add this to your GitLab webhook configuration:"
+  echo ""
+  echo "    GENERATED quorum-webhook-secret (not in .env — save this value):"
   echo "      QUORUM_WEBHOOK_SECRET=${WEBHOOK_SECRET}"
+  echo ""
 else
   WEBHOOK_SECRET="${QUORUM_WEBHOOK_SECRET}"
 fi
 _upsert_secret "quorum-webhook-secret" "${WEBHOOK_SECRET}"
 
 echo ""
-echo "==> Granting Cloud Run service account access to secrets..."
-# Cloud Run uses the compute default service account unless a dedicated SA is created
-SA_EMAIL="${PROJECT_ID}@appspot.gserviceaccount.com"
-SA_COMPUTE="$(gcloud iam service-accounts list \
-  --project "${PROJECT_ID}" \
-  --filter "displayName:Compute Engine default service account" \
-  --format "value(email)" 2>/dev/null | head -1)"
+echo "==> Resolving Cloud Run service account..."
+# Cloud Run uses the Compute Engine default service account:
+#   {PROJECT_NUMBER}-compute@developer.gserviceaccount.com
+# NOT the App Engine SA (project-id@appspot.gserviceaccount.com).
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" \
+  --format="value(projectNumber)" --quiet)"
+CLOUD_RUN_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+echo "    Service account: ${CLOUD_RUN_SA}"
 
-for SA in "${SA_EMAIL}" "${SA_COMPUTE}"; do
-  [[ -z "${SA}" ]] && continue
-  for SECRET in quorum-gitlab-token quorum-gemini-key quorum-github-token quorum-webhook-secret; do
-    gcloud secrets add-iam-policy-binding "${SECRET}" \
-      --member "serviceAccount:${SA}" \
-      --role "roles/secretmanager.secretAccessor" \
-      --project "${PROJECT_ID}" \
-      --quiet 2>/dev/null || true
-  done
+echo "==> Granting Cloud Run SA access to all four secrets..."
+for SECRET in quorum-gitlab-token quorum-gemini-key quorum-github-token quorum-webhook-secret; do
+  gcloud secrets add-iam-policy-binding "${SECRET}" \
+    --member "serviceAccount:${CLOUD_RUN_SA}" \
+    --role "roles/secretmanager.secretAccessor" \
+    --project "${PROJECT_ID}" \
+    --quiet
+  echo "    OK ${SECRET}"
 done
+
+echo "==> Granting Cloud Run SA permission to call Vertex AI..."
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member "serviceAccount:${CLOUD_RUN_SA}" \
+  --role "roles/aiplatform.user" \
+  --quiet
+echo "    OK roles/aiplatform.user"
 
 echo ""
 echo "✅ GCP setup complete for project: ${PROJECT_ID}"
 echo ""
 echo "Next steps:"
-echo "  1. Build + deploy Cloud Run webhook:"
-echo "     cd $(dirname "${SCRIPT_DIR}")"
+echo "  1. Deploy Cloud Run webhook:"
+echo "     cd ${SCRIPT_DIR}/.."
 echo "     ./deploy/cloud_run.sh ${PROJECT_ID} ${REGION}"
 echo ""
 echo "  2. Deploy Agent Engine:"
+echo "     pip install build"
 echo "     python deploy/agent_engine.py --project ${PROJECT_ID} --region ${REGION} --build"
 echo ""
 echo "  3. Configure GitLab webhook on quorum-demo:"
 echo "     URL:    <Cloud Run URL>/webhook/gitlab"
-echo "     Secret: ${WEBHOOK_SECRET:0:8}... (see above)"
+echo "     Events: Merge request events"
+echo "     Token:  ${WEBHOOK_SECRET:0:8}...  (first 8 chars shown)"
