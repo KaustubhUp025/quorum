@@ -102,7 +102,15 @@ class QuorumReasoningEngine:
                   confidence, title, explanation, file_path, line_number,
                   suggested_fix, reference)
         """
-        return asyncio.run(self._async_query(project_id, mr_iid, platform, dry_run))
+        # Agent Engine serves requests inside a running uvicorn event loop, so
+        # asyncio.run() raises "cannot be called from a running event loop".
+        # Run the coroutine in a fresh thread (no existing loop there).
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                asyncio.run,
+                self._async_query(project_id, mr_iid, platform, dry_run),
+            ).result()
 
     async def _async_query(
         self,
