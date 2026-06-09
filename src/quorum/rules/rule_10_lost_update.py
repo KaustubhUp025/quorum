@@ -31,8 +31,9 @@ RULE = Rule(
         "jpatemplate.queryforobject",
         # Ruby (ActiveRecord)
         "find_by(", ".find(",
-        # Mutable numeric fields (all languages — clearest lost-update signal)
-        "balance", "quantity", "stock",
+        # Mutable numeric fields — use more specific forms to reduce false positives
+        # (bare "balance"/"quantity"/"stock" match too broadly; surface_patterns cover the real cases)
+        "balance +=", "balance -=", "quantity +=", "quantity -=", "stock +=", "stock -=",
         # Concurrency guards — presence of these means code is CORRECT; used by Gemini to PASS
         "for update", "FOR UPDATE", "with (updlock)", "WITH (UPDLOCK)",
         "@Version", "row_version", "optimistic", "compare_and_swap",

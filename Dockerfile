@@ -2,12 +2,13 @@ FROM python:3.12-slim AS base
 
 WORKDIR /app
 
-# Install Node.js (LTS) for the @zereight/mcp-gitlab MCP server subprocess.
-# Pre-install the package globally so the first review has no download latency.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        nodejs \
-        npm \
-    && npm install -g @zereight/mcp-gitlab \
+# Install Node.js 20 LTS (pinned via NodeSource) for the @zereight/mcp-gitlab MCP server.
+# Debian Bookworm ships EOL Node 18 from APT; NodeSource gives us a supported LTS.
+# @zereight/mcp-gitlab is pinned to avoid silent supply-chain updates.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @zereight/mcp-gitlab@2.1.18 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

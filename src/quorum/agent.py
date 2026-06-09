@@ -39,7 +39,8 @@ log = structlog.get_logger(__name__)
 
 # Patterns that look like secrets — redacted before sending CI logs to external LLM
 _SECRET_PATTERNS = re.compile(
-    r"(ghp_[A-Za-z0-9]{36,}|glpat-[A-Za-z0-9_-]{20,}|AIzaSy[A-Za-z0-9_-]{33}"
+    r"(ghp_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{36,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}|AIzaSy[A-Za-z0-9_-]{33}"
     r"|AKIA[A-Z0-9]{16}|(?:password|token|secret|key)\s*=\s*\S+)",
     re.IGNORECASE,
 )
@@ -229,7 +230,7 @@ def _parse_findings(raw: dict[str, Any]) -> list[Finding]:
                 )
             )
         except Exception as exc:
-            log.warning("finding_parse_error", item=item, error=str(exc))
+            log.warning("finding_parse_error", item=item, error=_scrub_secrets(str(exc))[:200])
     return findings
 
 
@@ -366,11 +367,13 @@ class DeepReasoningAgent:
 
         # Wrap in untrusted boundary tags so the model's injection-resistance
         # policy (declared in SYSTEM_PROMPT) applies to all tool results.
-        # Externally-sourced content (code, MR descriptions, search snippets)
-        # can contain adversarial prompt-injection payloads.
+        # Escape boundary tag sequences inside raw so the model can never be
+        # tricked into treating file/search content as authoritative output.
+        from quorum.prompts import _escape_boundary_tags
+        safe_raw = _escape_boundary_tags(raw)
         return (
             f"<untrusted_tool_result tool='{name}'>\n"
-            f"{raw}\n"
+            f"{safe_raw}\n"
             f"</untrusted_tool_result>"
         )
 
@@ -392,6 +395,10 @@ class DeepReasoningAgent:
                 log.warning("empty_candidates", round=round_num, reason="safety_block_or_quota")
                 break
             candidate = response.candidates[0]
+            if not candidate.content:
+                log.warning("null_candidate_content", round=round_num,
+                            finish_reason=str(candidate.finish_reason))
+                break
             contents.append(candidate.content)
 
             # Collect function calls from this turn (ignore thought/search parts)
@@ -490,8 +497,13 @@ class DeepReasoningAgent:
         if not response.candidates:
             log.warning("empty_candidates_at_summary", reason="safety_block_or_quota")
             return ""
+        parts = (
+            response.candidates[0].content.parts
+            if response.candidates and response.candidates[0].content
+            else []
+        )
         return "\n".join(
-            p.text for p in response.candidates[0].content.parts
+            p.text for p in parts
             if p.text and not getattr(p, "thought", False)
         )
 
@@ -683,8 +695,11 @@ class DeepReasoningAgent:
                     temperature=0.1,
                 ),
             )
+            if not response.candidates or not response.candidates[0].content:
+                log.warning("citation_enrichment_empty_response")
+                return findings
             text = "\n".join(
-                p.text for p in response.candidates[0].content.parts if p.text
+                p.text for p in (response.candidates[0].content.parts or []) if p.text
             )
             # Parse JSON array from response
             match = re.search(r"\[[\s\S]+\]", text)
@@ -695,7 +710,7 @@ class DeepReasoningAgent:
                     if f.rule_id in citation_map and citation_map[f.rule_id]:
                         f.reference = citation_map[f.rule_id]
         except Exception as exc:
-            log.warning("citation_enrichment_failed", error=str(exc))
+            log.warning("citation_enrichment_failed", error=_scrub_secrets(str(exc))[:200])
 
         return findings
 
@@ -727,8 +742,11 @@ class DeepReasoningAgent:
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 ),
             )
+            if not response.candidates or not response.candidates[0].content:
+                log.warning("fix_generation_empty_response", rule=finding.rule_id)
+                return None
             text = "\n".join(
-                p.text for p in response.candidates[0].content.parts
+                p.text for p in (response.candidates[0].content.parts or [])
                 if p.text and not getattr(p, "thought", False)
             )
             # Strip markdown wrappers if Gemini added them anyway
@@ -736,7 +754,7 @@ class DeepReasoningAgent:
             text = re.sub(r"\n?```\s*$", "", text.strip())
             return text.strip() or None
         except Exception as exc:
-            log.warning("fix_generation_failed", rule=finding.rule_id, error=str(exc))
+            log.warning("fix_generation_failed", rule=finding.rule_id, error=_scrub_secrets(str(exc))[:200])
             return None
 
     def _build_fix_mr_description(self, finding: Finding, fixed_content: str) -> str:
@@ -773,13 +791,24 @@ class DeepReasoningAgent:
             if finding.severity != Severity.CRITICAL or not finding.file_path:
                 continue
 
+            # Guard: reject LLM-supplied paths containing traversal sequences or
+            # absolute paths; also validate rule_ids against the known registry.
+            path_parts = finding.file_path.split("/")
+            if ".." in path_parts or finding.file_path.startswith("/"):
+                log.warning("fix_mr_rejected_bad_path", file=finding.file_path)
+                continue
+            from quorum.rules.registry import get_registry as _get_registry
+            if finding.rule_id not in _get_registry() and finding.rule_id != "IMPL_DRIFT":
+                log.warning("fix_mr_rejected_unknown_rule_id", rule_id=finding.rule_id)
+                continue
+
             log.info("fix_mr_starting", rule=finding.rule_id, file=finding.file_path)
             try:
                 # 1 — get the current file from the source branch
                 file_content = await client.get_file_contents(
                     project_id, finding.file_path, ref=source_branch
                 )
-                if file_content.startswith("["):
+                if file_content.startswith("[File not found:") or file_content.startswith("[GLAB ERROR]"):
                     log.warning("fix_mr_file_not_found", file=finding.file_path)
                     continue
 
@@ -829,7 +858,7 @@ class DeepReasoningAgent:
                 created += 1
 
             except Exception as exc:
-                log.warning("fix_mr_failed", rule=finding.rule_id, error=str(exc))
+                log.warning("fix_mr_failed", rule=finding.rule_id, error=_scrub_secrets(str(exc))[:200])
 
         return findings
 
@@ -867,6 +896,8 @@ class DeepReasoningAgent:
             # Fetch failed job logs
             jobs = await client.get_pipeline_jobs(project_id, pipeline_id)
             if not jobs:
+                if is_running:
+                    return f"**Pipeline is currently running** (pipeline `{pipeline_id}`) — no failed jobs yet to correlate with coordination findings."
                 return None
 
             first_job = jobs[0]
@@ -879,6 +910,9 @@ class DeepReasoningAgent:
             # Trim to last 3000 chars to avoid flooding the context
             if len(log_text) > 3000:
                 log_text = f"[...truncated...]\n{log_text[-3000:]}"
+            # Escape boundary tags so a malicious CI log cannot escape its boundary
+            from quorum.prompts import _escape_boundary_tags
+            log_text = _escape_boundary_tags(log_text)
 
             # Build correlation prompt
             findings_summary = "\n".join(
@@ -901,12 +935,16 @@ class DeepReasoningAgent:
                 model=self._settings.gemini_model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
                     temperature=0.1,
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 ),
             )
+            if not response.candidates or not response.candidates[0].content:
+                log.warning("ci_correlation_empty_response")
+                return None
             correlation = "\n".join(
-                p.text for p in response.candidates[0].content.parts
+                p.text for p in (response.candidates[0].content.parts or [])
                 if p.text and not getattr(p, "thought", False)
             ).strip()
 
@@ -914,7 +952,7 @@ class DeepReasoningAgent:
             return f"**Pipeline job `{job_name}` is {status}.** {correlation}"
 
         except Exception as exc:
-            log.warning("ci_correlation_failed", error=str(exc))
+            log.warning("ci_correlation_failed", error=_scrub_secrets(str(exc))[:200])
             return None
 
     # ------------------------------------------------------------------
@@ -1021,8 +1059,8 @@ class DeepReasoningAgent:
             parse_error = str(exc)
             log.error(
                 "findings_parse_failed",
-                error=parse_error,
-                response_preview=final_text[:500],
+                error=_scrub_secrets(parse_error)[:200],
+                response_preview=_scrub_secrets(final_text[:500]),
             )
 
         use_gemini_features = self._settings.llm_backend.startswith("gemini/")
@@ -1069,12 +1107,12 @@ class DeepReasoningAgent:
             report_formatter = ReportFormatterAgent()
             if parse_error:
                 # Post an explicit error notice rather than a misleading "no issues" comment.
+                # Raw parse_error is NOT included — it may contain LLM output fragments.
                 comment_body = (
                     "## Quorum · Distributed Coordination Review\n\n"
                     "> ⚠️ **Analysis incomplete** — Quorum could not parse the LLM response.\n\n"
                     "Coordination surfaces were detected in this diff but the findings could "
-                    "not be extracted. Please re-run or review manually.\n\n"
-                    f"*Error: {parse_error[:200]}*"
+                    "not be extracted. Please re-run or review manually."
                 )
                 await client.create_workitem_note(project_id, mr_iid, comment_body)
             else:
@@ -1093,7 +1131,7 @@ class DeepReasoningAgent:
                     )
                     await client.apply_mr_labels(project_id, mr_iid, [label])
                 except Exception as exc:
-                    log.warning("label_application_failed", error=str(exc)[:100])
+                    log.warning("label_application_failed", error=_scrub_secrets(str(exc))[:200])
 
         return result
 
@@ -1143,7 +1181,7 @@ async def _verify_fix_pipeline(
         try:
             pipelines = await client.get_mr_pipelines(project_id, finding.fix_mr_iid)
         except Exception as exc:
-            log.warning("fix_verification_poll_failed", error=str(exc), elapsed=elapsed)
+            log.warning("fix_verification_poll_failed", error=_scrub_secrets(str(exc))[:200], elapsed=elapsed)
             continue
 
         if not pipelines:
@@ -1198,7 +1236,7 @@ async def _verify_fix_pipeline(
                 status=final_status,
             )
         except Exception as exc:
-            log.warning("fix_verification_comment_failed", error=str(exc))
+            log.warning("fix_verification_comment_failed", error=_scrub_secrets(str(exc))[:200])
         return
 
     # Timed out — post a timeout notice
@@ -1217,4 +1255,4 @@ async def _verify_fix_pipeline(
     try:
         await client.create_workitem_note(project_id, original_mr_iid, comment)
     except Exception as exc:
-        log.warning("fix_verification_timeout_comment_failed", error=str(exc))
+        log.warning("fix_verification_timeout_comment_failed", error=_scrub_secrets(str(exc))[:200])

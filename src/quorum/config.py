@@ -198,6 +198,15 @@ class Settings(BaseSettings):
         ),
     )
 
+    @field_validator("mcp_server_cmd")
+    @classmethod
+    def validate_mcp_cmd(cls, v: str) -> str:
+        if not any(v.startswith(p) for p in ("npx ", "node ")):
+            raise ValueError(
+                "mcp_server_cmd must start with 'npx ' or 'node ' to prevent arbitrary command execution"
+            )
+        return v
+
     @field_validator("gitlab_mcp_path")
     @classmethod
     def normalise_mcp_path(cls, v: str) -> str:

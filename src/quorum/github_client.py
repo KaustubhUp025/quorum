@@ -118,6 +118,7 @@ class GitHubRESTClient:
             "title": pr.get("title", ""),
             "state": pr.get("state", ""),
             "head_sha": pr.get("head", {}).get("sha", ""),
+            "base_sha": pr.get("base", {}).get("sha", ""),
             "author": pr.get("user", {}).get("login", ""),
         }
 

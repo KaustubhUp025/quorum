@@ -467,7 +467,6 @@ class GitLabYodaMCPClient:
                 log.info(
                     "mcp_yoda_connected",
                     tool_count=len(self._available_tools),
-                    tools=sorted(self._available_tools),
                 )
 
                 # Prepare REST fallback for any gaps
@@ -1134,7 +1133,7 @@ class GitLabRESTClient:
         """Return top-level notes on an MR (for duplicate-review detection)."""
         resp = await self._client.get(
             f"{self._base}/projects/{self._pid(project_id)}/merge_requests/{mr_iid}/notes",
-            params={"per_page": 20, "sort": "desc"},
+            params={"per_page": 100, "sort": "desc"},
         )
         resp.raise_for_status()
         return resp.json()

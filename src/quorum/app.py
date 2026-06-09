@@ -27,10 +27,11 @@ def create_app(settings: Settings) -> FastAPI:
     )
 
     if not settings.webhook_secret:
-        log.warning(
-            "webhook_secret_not_configured",
-            risk="Any caller who knows the URL can trigger reviews. "
-                 "Set QUORUM_WEBHOOK_SECRET to authenticate incoming webhooks.",
+        raise RuntimeError(
+            "QUORUM_WEBHOOK_SECRET is not set. "
+            "Set it to a strong random secret and configure the same value in "
+            "GitLab's webhook settings. Without it, any caller who knows the "
+            "Cloud Run URL can trigger reviews and create fix MRs."
         )
 
     @app.get("/health")
@@ -45,11 +46,10 @@ def create_app(settings: Settings) -> FastAPI:
         x_gitlab_event: str | None = Header(default=None, alias="X-Gitlab-Event"),
     ) -> JSONResponse:
         # SEC-01: validate webhook secret token when configured
-        if settings.webhook_secret:
-            if not x_gitlab_token or not hmac.compare_digest(
-                x_gitlab_token, settings.webhook_secret
-            ):
-                raise HTTPException(status_code=403, detail="Invalid X-Gitlab-Token")
+        if not x_gitlab_token or not hmac.compare_digest(
+            x_gitlab_token.encode(), settings.webhook_secret.encode()
+        ):
+            raise HTTPException(status_code=403, detail="Invalid X-Gitlab-Token")
 
         try:
             payload = await request.json()
@@ -140,6 +140,5 @@ async def _run_review_background(
             "background_review_failed",
             project_id=project_id,
             mr_iid=mr_iid,
-            error=str(exc),
-            exc_info=True,
+            error=str(exc)[:200],
         )

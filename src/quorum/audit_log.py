@@ -6,6 +6,7 @@ Entries are stored as a JSON array at ``~/.quorum/audit_log.json``
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import uuid
@@ -114,12 +115,18 @@ def append_entry(
         fix_mr_url=next((f.fix_mr_url for f in result.findings if f.fix_mr_url), None),
     )
 
-    raw = _load_raw()
-    raw.append(entry.model_dump())
-
     p = _log_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(raw, indent=2))
+    # flock prevents two concurrent background tasks from clobbering each other's
+    # audit entries (read-append-write is not atomic without a lock).
+    with open(p, "a+") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            raw = _load_raw()
+            raw.append(entry.model_dump())
+            p.write_text(json.dumps(raw, indent=2))
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
     return entry
 

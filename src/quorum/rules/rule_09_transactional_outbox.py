@@ -25,7 +25,8 @@ RULE = Rule(
         "repository.save(", "await save(", "prisma.create",
         "model.create(", "findoneandupdate(",
         # DB write signals — Java / Kotlin (JPA, JDBC)
-        "entitymanager", "jparepo", "save(", ".persist(",
+        # Use qualified forms to avoid false positives ("save(" matches autosave, filesave, etc.)
+        "entityManager.persist(", "entityManager.merge(", "jparepo.save(", ".persist(",
         # Event publish signals (all languages)
         "publish(", "emit(", "produce(", "send_event(", "dispatch(",
         "eventbus", "event_bus", "messagebus", "message_bus",

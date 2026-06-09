@@ -203,15 +203,14 @@ class TestProjectConfigLlmBackendValidation:
 # ---------------------------------------------------------------------------
 
 class TestWebhookSecurity:
-    def test_webhook_secret_warning_logged_when_absent(self, capfd):
-        """App startup should warn when no webhook secret is configured."""
-        import logging
+    def test_webhook_secret_required_at_startup(self):
+        """App startup must raise RuntimeError when webhook secret is absent."""
+        import pytest
         from quorum.app import create_app
         settings = Settings(gemini_api_key="test", gitlab_token="test")
         assert settings.webhook_secret is None
-        # Just verify create_app doesn't crash and the warning path runs
-        app = create_app(settings)
-        assert app is not None
+        with pytest.raises(RuntimeError, match="QUORUM_WEBHOOK_SECRET"):
+            create_app(settings)
 
     def test_webhook_requires_valid_token_when_secret_set(self):
         from quorum.app import create_app
@@ -236,19 +235,14 @@ class TestWebhookSecurity:
         })
         assert resp.status_code == 403
 
-    def test_webhook_no_secret_accepts_request(self):
-        """Without a secret, all properly-formed requests are accepted (open mode)."""
+    def test_webhook_no_secret_raises_at_startup(self):
+        """Without a secret, create_app must raise rather than serving unprotected requests."""
+        import pytest
         from quorum.app import create_app
-        from fastapi.testclient import TestClient
 
         settings = Settings(gemini_api_key="test", gitlab_token="test")
-        app = create_app(settings)
-        client = TestClient(app, raise_server_exceptions=False)
-
-        # Non-MR event → ignored (not 403)
-        resp = client.post("/webhook/gitlab", json={}, headers={"X-Gitlab-Event": "Push Hook"})
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "ignored"
+        with pytest.raises(RuntimeError, match="QUORUM_WEBHOOK_SECRET"):
+            create_app(settings)
 
 
 # ---------------------------------------------------------------------------

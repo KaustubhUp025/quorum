@@ -99,7 +99,7 @@ def test_summary_marks_inline_posted_findings():
     priority_order = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.PASS]
     sorted_f = sorted(result.findings, key=lambda x: priority_order.index(x.severity))
     pass_f = []
-    summary = _format_summary_comment(result, {"RULE_06"}, sorted_f, pass_f)
+    summary = _format_summary_comment(result, {"RULE_06:src/service.py:42"}, sorted_f, pass_f)
     assert "↗" in summary
     assert "inline diff comment" in summary
 
@@ -111,7 +111,7 @@ def test_summary_does_not_repeat_full_block_for_inline_findings():
     sorted_f = sorted(result.findings, key=lambda x: priority_order.index(x.severity))
     pass_f = []
     # When finding is posted inline, full block must not appear in summary
-    summary = _format_summary_comment(result, {"RULE_06"}, sorted_f, pass_f)
+    summary = _format_summary_comment(result, {"RULE_06:src/service.py:42"}, sorted_f, pass_f)
     # full block has "### 🟠 **HIGH** — RULE_06:" header
     assert "### 🟠 **HIGH** — RULE_06:" not in summary
 

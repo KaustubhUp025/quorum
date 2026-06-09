@@ -93,9 +93,15 @@ async def file_finding_issue(
     _SEVERITY_ORDER = [s.value for s in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.PASS]]
     threshold_idx = _SEVERITY_ORDER.index(min_severity) if min_severity in _SEVERITY_ORDER else 1
 
+    def _sev_idx(f):
+        try:
+            return _SEVERITY_ORDER.index(f.severity.value)
+        except ValueError:
+            return len(_SEVERITY_ORDER)  # unknown severity — exclude
+
     eligible = [
         f for f in result.findings
-        if f.severity != Severity.PASS and _SEVERITY_ORDER.index(f.severity.value) <= threshold_idx
+        if f.severity != Severity.PASS and _sev_idx(f) <= threshold_idx
     ]
     if not eligible:
         log.info("issue_filer_no_eligible_findings", threshold=min_severity)

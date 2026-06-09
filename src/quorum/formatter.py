@@ -5,6 +5,7 @@ ReportFormatterAgent converts a ReviewResult into a structured Markdown MR comme
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from quorum.models import Finding, ReviewResult, Severity
@@ -13,6 +14,18 @@ if TYPE_CHECKING:
     pass
 
 _SEP = "\n\n---\n\n"
+
+_HEADING_RE = re.compile(r"^(#+\s)", re.MULTILINE)
+
+
+def _sanitise_llm_prose(text: str) -> str:
+    """Escape markdown heading markers in LLM-generated prose to prevent structural injection.
+
+    A compromised LLM output containing '## Quorum · ...' would spoof a second
+    review section at the same visual level as the real one. Escaping the leading
+    '#' renders it as literal text instead of a heading.
+    """
+    return _HEADING_RE.sub(r"\\\1", text)
 
 
 class ReportFormatterAgent:
@@ -117,7 +130,7 @@ class ReportFormatterAgent:
                     line_number=finding.line_number,
                     diff_refs=diff_refs,
                 )
-                inline_posted.add(finding.rule_id)
+                inline_posted.add(f"{finding.rule_id}:{finding.file_path}:{finding.line_number}")
 
         # Always post the summary comment
         summary = _format_summary_comment(result, inline_posted, sorted_findings, pass_findings)
@@ -134,7 +147,7 @@ def _inline_comment_body(f: Finding) -> str:
         loc = f"`{f.file_path}`" + (f":{f.line_number}" if f.line_number else "")
         meta += f" | {loc}"
     lines.append(f"### {header}\n{meta}")
-    lines.append(f.explanation)
+    lines.append(_sanitise_llm_prose(f.explanation))
 
     if f.diff_snippet:
         lines.append(f"**In your diff:**\n```\n{f.diff_snippet.strip()}\n```")
@@ -143,7 +156,7 @@ def _inline_comment_body(f: Finding) -> str:
         lines.append(f"**Found via semantic search:**\n```\n{f.search_evidence.strip()}\n```")
 
     if f.suggested_fix:
-        lines.append(f"**Suggested fix:** {f.suggested_fix}")
+        lines.append(f"**Suggested fix:** {_sanitise_llm_prose(f.suggested_fix)}")
 
     if f.fix_mr_url:
         lines.append(
@@ -213,7 +226,7 @@ def _format_summary_comment(
         for f in non_pass:
             file_col = f"`{f.file_path}`" if f.file_path else "—"
             line_col = str(f.line_number) if f.line_number else "—"
-            inline_marker = " ↗" if f.rule_id in inline_posted else ""
+            inline_marker = " ↗" if f"{f.rule_id}:{f.file_path}:{f.line_number}" in inline_posted else ""
             table_rows.append(
                 f"| {f.severity.emoji} {f.severity.value} "
                 f"| {f.rule_id}{inline_marker} "
@@ -229,7 +242,7 @@ def _format_summary_comment(
         lines.append("---")
 
         # Full blocks only for findings that did NOT get an inline comment
-        non_inline = [f for f in non_pass if f.rule_id not in inline_posted]
+        non_inline = [f for f in non_pass if f"{f.rule_id}:{f.file_path}:{f.line_number}" not in inline_posted]
         for finding in non_inline:
             lines.append(_finding_block(finding))
             lines.append("---")
@@ -259,7 +272,7 @@ def _finding_block(f: Finding) -> str:
         loc = f"`{f.file_path}`" + (f":{f.line_number}" if f.line_number else "")
         meta += f" | {loc}"
     lines.append(f"### {header}\n{meta}")
-    lines.append(f.explanation)
+    lines.append(_sanitise_llm_prose(f.explanation))
 
     if f.diff_snippet:
         lines.append(f"**In your diff:**\n```\n{f.diff_snippet.strip()}\n```")
@@ -268,7 +281,7 @@ def _finding_block(f: Finding) -> str:
         lines.append(f"**Found via semantic search:**\n```\n{f.search_evidence.strip()}\n```")
 
     if f.suggested_fix:
-        lines.append(f"**Suggested fix:** {f.suggested_fix}")
+        lines.append(f"**Suggested fix:** {_sanitise_llm_prose(f.suggested_fix)}")
 
     if f.fix_mr_url:
         lines.append(
