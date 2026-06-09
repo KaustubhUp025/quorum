@@ -83,7 +83,7 @@ Quorum runs the **same three-stage pipeline** (SurfaceDetector → DeepReasoning
 3. Click the latest: **Quorum — ADK Coordination Reviewer**
 4. Select the **Playground** tab — a chat interface appears
 
-Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/8287826729838313472/playground?project=gen-lang-client-0294573094)
+Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/5236637982294802432/playground?project=gen-lang-client-0294573094)
 
 **Example — live review with real comment posting:**
 ```
@@ -110,7 +110,7 @@ To explore without posting, add "dry run": `"review quorum-hackathon/quorum-demo
 
 The agent exposes three tools: `run_review`, `explain_rule`, `list_rules`. All run on Vertex AI Agent Engine with Gemini 2.5 Pro.
 
-**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/8287826729838313472`
+**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/5236637982294802432`
 
 ---
 
