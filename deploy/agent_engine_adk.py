@@ -2,10 +2,13 @@
 """Deploy Quorum's ADK agent to Vertex AI Agent Engine.
 
 This enables the Agent Platform Playground (console.cloud.google.com/agent-platform)
-for interactive judge demos — the Playground only supports ADK-based agents.
+for interactive judge demos.
+
+IMPORTANT: Uses vertexai.agent_engines (NEW API), not vertexai.preview.reasoning_engines
+(OLD API). The Playground only recognises agents deployed via the new API.
 
 Usage:
-    pip install "google-adk>=1.0.0" google-cloud-aiplatform[agent_engines]
+    pip install "google-adk>=1.0.0" "google-cloud-aiplatform[agent_engines]>=1.153.1"
     gcloud auth application-default login
     python deploy/agent_engine_adk.py --project gen-lang-client-0294573094
 
@@ -20,8 +23,8 @@ Example Playground session:
     User:  "explain RULE_09"
     Quorum: [calls explain_rule] "RULE_09 — Transactional Outbox Missing..."
 
-The original deploy/agent_engine.py (Queryable interface) is kept unchanged
-and remains the deployed non-ADK engine used by the CLI and webhook.
+The original deploy/agent_engine.py (Queryable interface) remains unchanged
+and can be queried via Python SDK / REST API.
 """
 
 from __future__ import annotations
@@ -54,11 +57,11 @@ def ensure_staging_bucket(project: str, region: str, bucket_name: str) -> str:
 
 def deploy(project: str, region: str) -> str:
     import vertexai
-    from vertexai.preview import reasoning_engines
-    from vertexai.preview.reasoning_engines import AdkApp
+    # NEW API — required for Agent Platform Playground recognition
+    from vertexai import agent_engines
 
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-    from quorum.adk_app import _pull_secrets, root_agent  # noqa: F401
+    from quorum.adk_app import root_agent  # noqa: F401
 
     if root_agent is None:
         print("❌ google-adk is not installed. Run: pip install 'google-adk>=1.0.0'")
@@ -69,13 +72,10 @@ def deploy(project: str, region: str) -> str:
 
     vertexai.init(project=project, location=region, staging_bucket=staging_bucket)
 
-    print(f"==> Deploying ADK agent to Agent Engine ({project} / {region})...")
+    print(f"==> Deploying ADK agent via vertexai.agent_engines ({project} / {region})...")
     print("    This uploads the package and provisions the engine — takes ~3 minutes.")
 
-    adk_app = AdkApp(agent=root_agent, enable_tracing=True)
-
     # Runtime requirements for the Agent Engine container.
-    # google-adk is the new requirement vs. the original agent_engine.py.
     requirements = [
         "quorum @ git+https://github.com/KaustubhUp025/quorum.git",
         "google-adk>=1.0.0",
@@ -93,25 +93,26 @@ def deploy(project: str, region: str) -> str:
         "pyyaml>=6.0.3",
     ]
 
-    engine = reasoning_engines.ReasoningEngine.create(
-        adk_app,
+    # Use vertexai.agent_engines.create() — this is what the Playground recognises.
+    # Passing root_agent (BaseAgent) directly; AdkApp wrapping is automatic.
+    engine = agent_engines.create(
+        agent_engine=root_agent,
         requirements=requirements,
         display_name="Quorum — ADK Coordination Reviewer",
         description=(
             "ADK-based Quorum agent. Three conversational tools: run_review, "
             "explain_rule, list_rules. Supports the Agent Platform Playground."
         ),
-        sys_version="3.10",
     )
 
     resource_name = engine.resource_name
     engine_id = resource_name.split("/")[-1]
 
-    print(f"\n✅ ADK Agent Engine deployed!")
+    print(f"\n✅ ADK Agent Engine deployed via new API!")
     print(f"   Resource:   {resource_name}")
-    print(f"   Playground: https://console.cloud.google.com/agent-platform/runtimes?project={project}")
+    print(f"   Playground: https://console.cloud.google.com/agent-platform/agents/{engine_id}/playground?project={project}")
     print()
-    print("   In the Playground, click the engine and open the 'Playground' tab.")
+    print("   In the Playground, open the 'Playground' tab.")
     print("   Example prompts:")
     print("     • 'review quorum-hackathon/quorum-demo MR 1 dry run'")
     print("     • 'explain RULE_01'")
@@ -119,10 +120,10 @@ def deploy(project: str, region: str) -> str:
     print()
     print("   Test from Python:")
     print(f"     import vertexai")
-    print(f"     from vertexai.preview import reasoning_engines")
+    print(f"     from vertexai import agent_engines")
     print(f"     vertexai.init(project='{project}', location='{region}')")
-    print(f"     engine = reasoning_engines.ReasoningEngine('{resource_name}')")
-    print(f"     for event in engine.stream_query(message='review quorum-hackathon/quorum-demo MR 1 dry run'):")
+    print(f"     engine = agent_engines.get('{resource_name}')")
+    print(f"     for event in engine.stream_query(message='list all rules', user_id='test'):")
     print(f"         print(event)")
 
     return resource_name
@@ -130,7 +131,7 @@ def deploy(project: str, region: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Deploy Quorum's ADK agent to Vertex AI Agent Engine"
+        description="Deploy Quorum's ADK agent to Vertex AI Agent Engine (new API)"
     )
     parser.add_argument("--project", required=True, help="GCP project ID")
     parser.add_argument("--region", default="us-central1")
