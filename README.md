@@ -66,12 +66,12 @@ A full Quorum review comment was also posted on `gitlab-org/gitaly` !8812 (note_
 | Surface | URL |
 |---|---|
 | **Cloud Run webhook** | `https://quorum-3fnjzg6adq-uc.a.run.app` · [health](https://quorum-3fnjzg6adq-uc.a.run.app/health) |
-| **Vertex AI Agent Engine (ADK)** | [Open Playground](https://console.cloud.google.com/agent-platform/runtimes?project=gen-lang-client-0294573094) — select "Quorum — ADK Coordination Reviewer" |
+| **Vertex AI Agent Engine (ADK)** | `projects/803239892746/locations/us-central1/reasoningEngines/1004380232473378816` · [Open Playground](https://console.cloud.google.com/agent-platform/runtimes/1004380232473378816?project=gen-lang-client-0294573094) |
 | **Vertex AI Agent Engine (SDK)** | `projects/803239892746/locations/us-central1/reasoningEngines/7698207022373666816` · Python SDK / REST API |
 
 ### Agent Platform Playground (interactive)
 
-Open the [Agent Platform console](https://console.cloud.google.com/agent-platform/runtimes?project=gen-lang-client-0294573094), select **"Quorum — ADK Coordination Reviewer"**, and open the **Playground** tab.
+Open the [ADK Playground](https://console.cloud.google.com/agent-platform/runtimes/1004380232473378816?project=gen-lang-client-0294573094) and click the **Playground** tab.
 
 Example conversation:
 ```
