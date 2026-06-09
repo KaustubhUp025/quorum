@@ -44,6 +44,7 @@ Validated on four dedicated benchmark MRs in a purpose-built demo repository, co
 | `quorum-hackathon/multi-lang-coordination-demo` | Java | GitLab | `Thread.sleep(RETRY_DELAY_MS)` — fixed 3s constant, no jitter on payment gateway retries | RULE_06 🟠 | [MR !4](https://gitlab.com/quorum-hackathon/multi-lang-coordination-demo/-/merge_requests/4) |
 | `quorum-hackathon/java-event-driven-benchmark` | Java | GitLab | `new RestTemplate()` without timeout stalls Kafka consumer thread (RULE_14). `@KafkaListener` on payment topic without DLQ (RULE_12). `itemStore.add()` without dedup (RULE_13). Verified Phase B inline diff comments + C3 labels + C4 reviewer suggestion via directory fallback. Phase D: fix MR !4 created → CI `success` → ✅ verified. | RULE_14 🔴 + RULE_13 🔴 + RULE_12 🟠 | [MR !1](https://gitlab.com/quorum-hackathon/java-event-driven-benchmark/-/merge_requests/1) |
 | `KaustubhUp025/quorum-github-demo` | Python | GitHub | `requests.post()` with no timeout (RULE_14). `time.sleep(RETRY_DELAY)` fixed delay (RULE_06). Kafka consumer with no DLQ on failure (RULE_12). Phase D: fix PR #4 created → GitHub Actions `success` → ✅ verified. Full GitHub agentic loop end-to-end. | RULE_12 🔴 + RULE_06 🟠 + RULE_14 🟠 | [PR #1](https://github.com/KaustubhUp025/quorum-github-demo/pull/1) |
+| `quorum-hackathon/ts-payment-gateway-demo` | TypeScript | GitLab | `consumer.run({ eachMessage })` without DLQ error handler (RULE_12). `INSERT INTO payments` without orderId idempotency check (RULE_13). `await fetch(...)` without timeout (RULE_14). `BASE_DELAY_MS * 2**attempt` pure exponential — no jitter (RULE_06). Validated across **all three deployment modes** (CLI + webhook + ADK Playground). | RULE_12 🔴 + RULE_06 🟠 + RULE_08 🟠 + RULE_13 🟠 + RULE_14 🟠 | [MR !1](https://gitlab.com/quorum-hackathon/ts-payment-gateway-demo/-/merge_requests/1) · [MR !2](https://gitlab.com/quorum-hackathon/ts-payment-gateway-demo/-/merge_requests/2) · [MR !3](https://gitlab.com/quorum-hackathon/ts-payment-gateway-demo/-/merge_requests/3) |
 
 All review comments posted live. RULE_07 and RULE_11 correctly PASS on the Java MRs (catch-block retry ≠ test sleep, re-interrupt is the correct Go idiom).
 
@@ -83,7 +84,7 @@ Quorum runs the **same three-stage pipeline** (SurfaceDetector → DeepReasoning
 3. Click the latest: **Quorum — ADK Coordination Reviewer**
 4. Select the **Playground** tab — a chat interface appears
 
-Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/5236637982294802432/playground?project=gen-lang-client-0294573094)
+Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/6399129636109811712/playground?project=gen-lang-client-0294573094)
 
 **Example — live review with real comment posting:**
 ```
@@ -110,7 +111,7 @@ To explore without posting, add "dry run": `"review quorum-hackathon/quorum-demo
 
 The agent exposes three tools: `run_review`, `explain_rule`, `list_rules`. All run on Vertex AI Agent Engine with Gemini 2.5 Pro.
 
-**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/5236637982294802432`
+**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/6399129636109811712`
 
 ---
 
@@ -672,6 +673,32 @@ After deploying:
 - GitLab webhook: project → Settings → Webhooks → `https://<service>.run.app/webhook/gitlab`
 - Enable: **Merge request events**
 
+### Gemini API key vs Vertex AI
+
+Quorum can call Gemini 2.5 Pro through two routes. The choice has no effect on review quality — the model is identical either way.
+
+| | Gemini API key (`QUORUM_GEMINI_API_KEY`) | Vertex AI (`QUORUM_USE_VERTEX_AI=true`) |
+|---|---|---|
+| **Auth** | API key (prepaid credits, rate-limited per key) | Application Default Credentials (ADC) — IAM-controlled |
+| **Best for** | Local dev, CI pipelines with a key, contributors | Cloud Run, ADK Agent Engine, anything already on GCP |
+| **Cost model** | Prepaid credits, pay-as-you-go | Billed to GCP project, supports committed use |
+| **Key management** | Rotate manually; exposing key = billing risk | No key to manage — SA has `roles/aiplatform.user` |
+| **Context caching** | ✅ Supported | ❌ Not supported (see note below) |
+
+**When to prefer Vertex AI:** Any deployed Cloud Run service or Agent Engine already runs under a GCP service account with ADC available. Using `QUORUM_USE_VERTEX_AI=true` removes the single point of failure of a depletable key and is the recommended configuration for all GCP deployments.
+
+**When to prefer the API key:** Local development and CI pipelines outside GCP where ADC is not available. Set `QUORUM_GEMINI_API_KEY` and leave `QUORUM_USE_VERTEX_AI` unset.
+
+#### Why context caching is skipped on Vertex AI
+
+Quorum uses Gemini context caching to cache the rules system prompt (~2 000 tokens) across the multi-turn tool-calling loop, reducing per-round token cost. The cache is created with a `system_instruction` field, which the direct Gemini API accepts. Vertex AI's API surface, however, only allows `"user"` and `"model"` roles in cached content — passing a system-role entry raises:
+
+```
+400 INVALID_ARGUMENT: Please use a valid role: user, model
+```
+
+Quorum detects `QUORUM_USE_VERTEX_AI=true` and skips cache initialisation automatically (`agent.py:_init_context_cache`). The full system prompt is re-sent on each tool-call round instead. For a typical 4-round review this adds ~8 000 cached-to-uncached input tokens — a small cost increase, no change in reasoning quality.
+
 ---
 
 ## Configuration reference
@@ -837,7 +864,7 @@ mypy src/                  # type check
 
 | Component | Technology |
 |---|---|
-| LLM (primary) | Gemini 2.5 Pro — `google-genai 2.6.0` — thinking_budget=-1, Google Search grounding |
+| LLM (primary) | Gemini 2.5 Pro — `google-genai 2.6.0` — thinking_budget=-1, Google Search grounding; Cloud Run + Agent Engine use Vertex AI (ADC), local CLI uses Gemini API key |
 | LLM (alternate) | Any LiteLLM backend — `litellm 1.86.2` — OpenAI-compatible tool calling |
 | GitLab MCP | `glab mcp serve` (191 tools, official) · `@zereight/mcp-gitlab` (107 tools, community) |
 | GitHub client | GitHub REST API via `httpx 0.28.1` |
