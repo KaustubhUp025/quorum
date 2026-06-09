@@ -303,8 +303,10 @@ class DeepReasoningAgent:
         self._gemini = _make_gemini_client(settings)
         # Try to activate context caching for the constant system-prompt + rules prefix.
         # Falls back to direct system_instruction if the plan/quota doesn't support it.
+        # Skip on Vertex AI: cached_content + system_instruction raises INVALID_ARGUMENT
+        # ("Please use a valid role: user, model") in the Vertex AI API surface.
         self._cache_name: str | None = None
-        if settings.llm_backend.startswith("gemini/"):
+        if settings.llm_backend.startswith("gemini/") and not settings.use_vertex_ai:
             self._cache_name = _init_context_cache(self._gemini, settings)
 
     @retry(
