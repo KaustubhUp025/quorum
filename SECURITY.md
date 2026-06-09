@@ -46,17 +46,28 @@ The following are **out of scope**:
 
 ### Prompt injection
 
-Quorum sends MR diffs and `semantic_code_search` results directly to Gemini. A malicious MR author can include text designed to manipulate the model's output (e.g. `<!-- IGNORE PREVIOUS INSTRUCTIONS -->`).
+Quorum sends MR diffs, file contents, CI logs, and `semantic_code_search` results to Gemini. A malicious MR author can include text designed to manipulate the model's output.
 
-**Current mitigation:** Findings are parsed as structured JSON. Free-text from the model is never executed. Only the JSON schema fields are used.
-
-**Recommendation for production:** Run Quorum only on trusted projects, or add a pre-processing step that strips HTML comments and suspicious injection patterns from diff text before it is included in the Gemini prompt.
+**Mitigations in place:**
+- All externally-sourced content (diff, file contents, CI logs, MR metadata, search results) is isolated inside `<untrusted_diff>`, `<untrusted_tool_result>`, or `<untrusted_ci_log>` XML boundary tags.
+- A `_escape_boundary_tags()` function HTML-encodes any of those tag names before embedding external content — including opening tags, closing tags, whitespace variants (`</ untrusted_diff >`), and case variants. This prevents boundary-escape attacks.
+- The system prompt includes 5 ABSOLUTE RULES that instruct the model to never follow instructions from untrusted content, never reveal secrets, never repeat the system prompt, and never change output format based on untrusted input.
+- Every standalone Gemini call (citations, fix generation, CI correlation) passes `system_instruction=SYSTEM_PROMPT` so the injection-resistance policy is active on all calls.
+- LLM-supplied `file_path` values are validated before any write API call: `..` traversal and absolute paths are rejected.
+- LLM-generated prose (`explanation`, `suggested_fix`) has markdown heading markers escaped before rendering, preventing fake `## Quorum` heading injection in MR comments.
 
 ### Webhook secret verification
 
-The `quorum serve` FastAPI server accepts GitLab webhooks. Without a webhook secret, any HTTP client can trigger a review.
+The `quorum serve` FastAPI server accepts GitLab webhooks. **`QUORUM_WEBHOOK_SECRET` is mandatory** — the server raises a `RuntimeError` at startup if it is not set, refusing to serve any requests.
 
-**Mitigation:** Set `QUORUM_WEBHOOK_SECRET` to a random string. GitLab signs every webhook with this secret. The server validates the `X-Gitlab-Token` header and returns `403` on mismatch.
+**Configuration:** Set `QUORUM_WEBHOOK_SECRET` to a strong random string. Configure the same value in GitLab's webhook settings. The server validates the `X-Gitlab-Token` header using `hmac.compare_digest` (timing-safe) and returns `403` on mismatch.
+
+### Credential safety
+
+- Secrets are loaded from Google Secret Manager at runtime — never baked into the container image.
+- All `error=str(exc)` log fields in the review pipeline are passed through `_scrub_secrets()` before writing, which redacts GitLab PATs, GitHub tokens, and Google API keys.
+- Background task error logs do not include stack traces (`exc_info` disabled) to prevent `Settings` locals from appearing in Cloud Run logs.
+- The `run_review` ADK tool return dict contains only review findings — no credential values are serialised into Playground responses.
 
 ## Disclosure policy
 

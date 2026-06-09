@@ -123,7 +123,7 @@ Every MR opened or updated fires a webhook to Cloud Run. Quorum runs the full pi
 **One-time setup (2 minutes):**
 1. GitLab project → **Settings → Webhooks → Add new webhook**
 2. Set URL: `https://quorum-3fnjzg6adq-uc.a.run.app/webhook/gitlab`
-3. Secret token: your `QUORUM_WEBHOOK_SECRET`
+3. Secret token: your `QUORUM_WEBHOOK_SECRET` — **required** (the server raises an error at startup if this is not set, so all incoming requests are always authenticated)
 4. Check **Merge request events** → Save
 
 From that point on, every MR gets a full Quorum review automatically.
