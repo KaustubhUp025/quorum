@@ -95,6 +95,10 @@ def deploy(project: str, region: str) -> str:
 
     # Use vertexai.agent_engines.create() — this is what the Playground recognises.
     # Passing root_agent (BaseAgent) directly; AdkApp wrapping is automatic.
+    #
+    # QUORUM_CREATE_FIX_MRS=true: allows the Playground to demonstrate fix MR creation.
+    # Over-usage protection: run_review() defaults to dry_run=True, so fix MRs are only
+    # created when the user explicitly passes dry_run=False AND a CRITICAL finding is found.
     engine = agent_engines.create(
         agent_engine=root_agent,
         requirements=requirements,
@@ -103,6 +107,7 @@ def deploy(project: str, region: str) -> str:
             "ADK-based Quorum agent. Three conversational tools: run_review, "
             "explain_rule, list_rules. Supports the Agent Platform Playground."
         ),
+        env_vars={"QUORUM_CREATE_FIX_MRS": "true"},
     )
 
     resource_name = engine.resource_name

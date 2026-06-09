@@ -61,39 +61,99 @@ A full Quorum review comment was also posted on `gitlab-org/gitaly` !8812 (note_
 
 ---
 
-## Live deployment
+## Three deployment modes of one tool
 
-| Surface | URL |
-|---|---|
-| **Cloud Run webhook** | `https://quorum-3fnjzg6adq-uc.a.run.app` · [health](https://quorum-3fnjzg6adq-uc.a.run.app/health) |
-| **Vertex AI Agent Engine (ADK)** | `projects/803239892746/locations/us-central1/reasoningEngines/8287826729838313472` · [Open Playground](https://console.cloud.google.com/agent-platform/agents/8287826729838313472/playground?project=gen-lang-client-0294573094) |
-| **Vertex AI Agent Engine (SDK)** | `projects/803239892746/locations/us-central1/reasoningEngines/7698207022373666816` · Python SDK / REST API |
+Quorum runs the **same three-stage pipeline** (SurfaceDetector → DeepReasoning → ReportFormatter) regardless of how it's invoked. The pipeline code is identical in all three modes — only the entry point differs.
 
-### Agent Platform Playground (interactive)
+| Mode | Best for | Entry point |
+|---|---|---|
+| **Interactive** | Live demo, ad-hoc reviews, exploring rules | Agent Platform Playground |
+| **Automated CI** | Every MR reviewed the moment it's opened | GitLab webhook → Cloud Run |
+| **Power user / local** | Full control — SARIF, GitHub PRs, scripting | CLI / Python SDK |
 
-Open the [ADK Playground](https://console.cloud.google.com/agent-platform/agents/8287826729838313472/playground?project=gen-lang-client-0294573094) and click the **Playground** tab.
+---
 
-Example conversation:
+### Mode 1 — Interactive: Agent Platform Playground
+
+> *"Ask Quorum to review any MR, watch it run live, see the comment posted to GitLab in real time."*
+
+**How to reach the Playground:**
+1. Open [console.cloud.google.com/agent-platform](https://console.cloud.google.com/agent-platform?project=gen-lang-client-0294573094)
+2. Left sidebar → **Agents** → **Deployments**
+3. Click the latest: **Quorum — ADK Coordination Reviewer**
+4. Select the **Playground** tab — a chat interface appears
+
+Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/8287826729838313472/playground?project=gen-lang-client-0294573094)
+
+**Example — live review with real comment posting:**
 ```
-You:    "review quorum-hackathon/quorum-demo MR 1 dry run"
-Quorum: Found 5 coordination issues in quorum-demo #1:
+You:    "review quorum-hackathon/quorum-demo MR 1"
+Quorum: [runs full pipeline — posts real comment to GitLab]
+        Found 5 coordination issues in quorum-demo #1:
         🔴 RULE_01 Static lock value — no fencing token (100%) — lock_manager.py:12
         🔴 RULE_03 Saga missing compensation handler (100%) — saga_orchestrator.py:18
-        ...
-        ⛔ Pipeline should be blocked until CRITICAL findings are resolved.
+        🔴 RULE_09 Transactional outbox missing (100%) — order_service.py:34
+        🟠 RULE_06 Retry without jitter (95%) — retry_handler.py:8
+        🟠 RULE_10 Lost update — SELECT without FOR UPDATE (90%) — payment.py:21
+        ⛔ Pipeline blocked — 3 CRITICAL findings require resolution.
+        ✅ Draft fix MR opened: !9 — [Quorum] Fix RULE_01 static lock value
 
 You:    "explain RULE_09"
 Quorum: ## RULE_09 — Transactional Outbox Missing
-        A database write and message-broker publish happen in separate transactions...
+        Service writes to DB AND publishes an event without an outbox table...
 
 You:    "list all rules"
-Quorum: [calls list_rules] Returns all 14 rules with descriptions.
+Quorum: [calls list_rules — returns all 14 rules with descriptions and references]
 ```
 
-The ADK agent exposes three tools: `run_review`, `explain_rule`, `list_rules`.
+To explore without posting, add "dry run": `"review quorum-hackathon/quorum-demo MR 1 dry run"`
 
-**Python SDK (non-ADK engine):**
+The agent exposes three tools: `run_review`, `explain_rule`, `list_rules`. All run on Vertex AI Agent Engine with Gemini 2.5 Pro.
 
+**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/8287826729838313472`
+
+---
+
+### Mode 2 — Automated CI: GitLab Webhook
+
+> *"Drop one URL into GitLab project settings — every MR reviewed automatically, forever."*
+
+Every MR opened or updated fires a webhook to Cloud Run. Quorum runs the full pipeline and posts inline comments at exact file+line positions, applies `quorum-review::critical` labels, suggests relevant reviewers, and opens draft fix MRs for CRITICAL findings — all without any human trigger.
+
+**One-time setup (2 minutes):**
+1. GitLab project → **Settings → Webhooks → Add new webhook**
+2. Set URL: `https://quorum-3fnjzg6adq-uc.a.run.app/webhook/gitlab`
+3. Secret token: your `QUORUM_WEBHOOK_SECRET`
+4. Check **Merge request events** → Save
+
+From that point on, every MR gets a full Quorum review automatically.
+
+**Webhook health:** [https://quorum-3fnjzg6adq-uc.a.run.app/health](https://quorum-3fnjzg6adq-uc.a.run.app/health)
+
+---
+
+### Mode 3 — Power user: CLI and Python SDK
+
+> *"Full control — SARIF output, GitHub PRs, LiteLLM backends, scripting."*
+
+**CLI — GitLab:**
+```bash
+pip install quorum
+export QUORUM_GITLAB_TOKEN=glpat-...
+export QUORUM_GEMINI_API_KEY=AIzaSy...
+
+quorum review quorum-hackathon/quorum-demo 1              # post real comment
+quorum review quorum-hackathon/quorum-demo 1 --dry-run    # explore without posting
+quorum review quorum-hackathon/quorum-demo 1 --format sarif > results.sarif  # GitHub Code Scanning
+```
+
+**CLI — GitHub:**
+```bash
+export QUORUM_GITHUB_TOKEN=ghp_...
+quorum review KaustubhUp025/quorum-github-demo 1 --platform github
+```
+
+**Python SDK:**
 ```python
 import vertexai
 from vertexai.preview import reasoning_engines
@@ -105,13 +165,12 @@ engine = reasoning_engines.ReasoningEngine(
 result = engine.query(
     project_id='quorum-hackathon/quorum-demo',
     mr_iid=1,
-    dry_run=True,          # set False to post the review comment
+    dry_run=True,
 )
 print(result['summary'])   # 5 coordination bugs, all at 100% confidence
 ```
 
 **REST / curl:**
-
 ```bash
 curl -s -X POST \
   -H "Authorization: Bearer $(gcloud auth print-access-token)" \
