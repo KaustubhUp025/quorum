@@ -29,7 +29,9 @@ def _pull_secrets() -> None:
     Called at the start of each tool invocation. Skipped when keys are already
     present in the environment (local dev, or Agent Engine env_vars injection).
     """
-    if os.getenv("QUORUM_GEMINI_API_KEY") or os.getenv("QUORUM_USE_VERTEX_AI"):
+    llm_ready = os.getenv("QUORUM_GEMINI_API_KEY") or os.getenv("QUORUM_USE_VERTEX_AI")
+    gitlab_ready = os.getenv("QUORUM_GITLAB_TOKEN")
+    if llm_ready and gitlab_ready:
         return
     try:
         import urllib.request

@@ -55,6 +55,19 @@ def ensure_staging_bucket(project: str, region: str, bucket_name: str) -> str:
     return f"gs://{bucket_name}"
 
 
+def _read_secret(project: str, secret_id: str) -> str:
+    """Read a secret from Secret Manager at deploy time."""
+    result = subprocess.run(
+        ["gcloud", "secrets", "versions", "access", "latest",
+         "--secret", secret_id, "--project", project],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"⚠️  Could not read secret '{secret_id}': {result.stderr.strip()}")
+        return ""
+    return result.stdout.strip()
+
+
 def deploy(project: str, region: str) -> str:
     import vertexai
     # NEW API — required for Agent Platform Playground recognition
@@ -74,6 +87,13 @@ def deploy(project: str, region: str) -> str:
 
     print(f"==> Deploying ADK agent via vertexai.agent_engines ({project} / {region})...")
     print("    This uploads the package and provisions the engine — takes ~3 minutes.")
+
+    # Read tokens from Secret Manager at deploy time so the engine container
+    # receives them as plain env vars — avoids Secret Manager calls at runtime
+    # and removes the dependency on the engine SA having secretAccessor at runtime.
+    print("==> Reading credentials from Secret Manager...")
+    gitlab_token = _read_secret(project, "quorum-gitlab-token")
+    github_token = _read_secret(project, "quorum-github-token")
 
     # Runtime requirements for the Agent Engine container.
     requirements = [
@@ -107,7 +127,16 @@ def deploy(project: str, region: str) -> str:
             "ADK-based Quorum agent. Three conversational tools: run_review, "
             "explain_rule, list_rules. Supports the Agent Platform Playground."
         ),
-        env_vars={"QUORUM_CREATE_FIX_MRS": "true"},
+        env_vars={
+            "QUORUM_CREATE_FIX_MRS": "true",
+            # Vertex AI — avoids depleted AI Studio key; uses engine SA's ADC
+            "QUORUM_USE_VERTEX_AI": "true",
+            "QUORUM_GOOGLE_CLOUD_PROJECT": project,
+            "QUORUM_GOOGLE_CLOUD_LOCATION": region,
+            # Tokens injected at deploy time from Secret Manager
+            "QUORUM_GITLAB_TOKEN": gitlab_token,
+            "QUORUM_GITHUB_TOKEN": github_token,
+        },
     )
 
     resource_name = engine.resource_name
