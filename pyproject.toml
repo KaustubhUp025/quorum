@@ -55,6 +55,7 @@ alt-backends = [
 deploy = [
     "google-cloud-run",
     "pyyaml==6.0.3",
+    "google-adk>=1.0.0",
 ]
 
 [project.scripts]

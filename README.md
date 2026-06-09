@@ -66,9 +66,33 @@ A full Quorum review comment was also posted on `gitlab-org/gitaly` !8812 (note_
 | Surface | URL |
 |---|---|
 | **Cloud Run webhook** | `https://quorum-3fnjzg6adq-uc.a.run.app` · [health](https://quorum-3fnjzg6adq-uc.a.run.app/health) |
-| **Vertex AI Agent Engine playground** | [Open in Google Cloud Console](https://console.cloud.google.com/vertex-ai/reasoning-engines/7698207022373666816?project=gen-lang-client-0294573094) |
+| **Vertex AI Agent Engine (ADK)** | [Open Playground](https://console.cloud.google.com/agent-platform/runtimes?project=gen-lang-client-0294573094) — select "Quorum — ADK Coordination Reviewer" |
+| **Vertex AI Agent Engine (SDK)** | `projects/803239892746/locations/us-central1/reasoningEngines/7698207022373666816` · Python SDK / REST API |
 
-The Agent Engine can be queried directly from Python (no webhook setup required):
+### Agent Platform Playground (interactive)
+
+Open the [Agent Platform console](https://console.cloud.google.com/agent-platform/runtimes?project=gen-lang-client-0294573094), select **"Quorum — ADK Coordination Reviewer"**, and open the **Playground** tab.
+
+Example conversation:
+```
+You:    "review quorum-hackathon/quorum-demo MR 1 dry run"
+Quorum: Found 5 coordination issues in quorum-demo #1:
+        🔴 RULE_01 Static lock value — no fencing token (100%) — lock_manager.py:12
+        🔴 RULE_03 Saga missing compensation handler (100%) — saga_orchestrator.py:18
+        ...
+        ⛔ Pipeline should be blocked until CRITICAL findings are resolved.
+
+You:    "explain RULE_09"
+Quorum: ## RULE_09 — Transactional Outbox Missing
+        A database write and message-broker publish happen in separate transactions...
+
+You:    "list all rules"
+Quorum: [calls list_rules] Returns all 14 rules with descriptions.
+```
+
+The ADK agent exposes three tools: `run_review`, `explain_rule`, `list_rules`.
+
+**Python SDK (non-ADK engine):**
 
 ```python
 import vertexai
@@ -84,6 +108,16 @@ result = engine.query(
     dry_run=True,          # set False to post the review comment
 )
 print(result['summary'])   # 5 coordination bugs, all at 100% confidence
+```
+
+**REST / curl:**
+
+```bash
+curl -s -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/803239892746/locations/us-central1/reasoningEngines/7698207022373666816:query" \
+  -d '{"input": {"project_id": "quorum-hackathon/quorum-demo", "mr_iid": 1, "platform": "gitlab", "dry_run": true}}'
 ```
 
 ---
@@ -640,9 +674,9 @@ Contributing a rule is a single-file addition. See [docs/CONTRIBUTING.md](docs/C
 
 **Quick version:**
 
-1. Create `src/quorum/rules/rule_12_your_rule_name.py`
+1. Create `src/quorum/rules/rule_15_your_rule_name.py`
 2. Define a `RULE = Rule(...)` with keywords, patterns, search query templates, and reasoning guidance
-3. Add `tests/fixtures/bad/rule_12_*.py` and `tests/fixtures/good/rule_12_*.py`
+3. Add `tests/fixtures/bad/rule_15_*.py` and `tests/fixtures/good/rule_15_*.py`
 4. Add a surface-detector assertion to `tests/test_detector.py`
 5. Open a PR — the registry auto-discovers new rules at startup
 
