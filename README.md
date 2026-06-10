@@ -114,7 +114,7 @@ Quorum: [calls list_rules — returns all 14 rules with descriptions and referen
 
 To explore without posting, add "dry run": `"review quorum-hackathon/quorum-demo MR 1 dry run"`
 
-**Live GitLab MCP in the Playground (the partner superpower).** Beyond the pipeline, the agent is wired to **GitLab's MCP server live** — so a judge can call GitLab MCP tools directly in the chat:
+**Live GitLab MCP in the Playground (the partner superpower).** Beyond the pipeline, the agent is wired to **GitLab's MCP server live** — so you can call GitLab MCP tools directly in the chat:
 ```
 You:    "show me the changed files and diffs of MR 1 in quorum-hackathon/quorum-demo"
 Quorum: [calls the GitLab MCP tool get_merge_request_diffs over the network]
@@ -925,4 +925,4 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 ---
 
-*Built for the Google Cloud × GitLab Hackathon 2026.*
+*An AI agent for distributed-coordination code review, built on Gemini + GitLab's MCP server and deployed on Google Cloud.*
