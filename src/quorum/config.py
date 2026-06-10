@@ -111,7 +111,11 @@ class Settings(BaseSettings):
     )
     max_search_results: int = Field(default=5, description="Max snippets per semantic search call")
     max_tool_rounds: int = Field(
-        default=10, description="Hard cap on Gemini tool-call rounds per review"
+        default=12,
+        description=(
+            "Hard cap on Gemini tool-call rounds per review. The REST lexical-search "
+            "backend is noisier than glab MCP and needs a few more rounds to converge."
+        ),
     )
     disabled_rules: list[str] = Field(
         default_factory=list,

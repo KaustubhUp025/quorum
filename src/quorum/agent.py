@@ -51,6 +51,16 @@ def _scrub_secrets(text: str) -> str:
     return _SECRET_PATTERNS.sub("[REDACTED]", text)
 
 
+def _is_forbidden(exc: Exception) -> bool:
+    """True when an exception represents an HTTP 401/403 (no write access).
+
+    Covers httpx.HTTPStatusError (REST client) and any exception exposing a
+    ``response.status_code`` of 401/403.
+    """
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) in (401, 403)
+
+
 # Type alias for any GitLab client implementation
 GitLabClientT = GitLabYodaMCPClient | GitLabRESTClient
 
@@ -130,6 +140,11 @@ _GEMINI_TOOLS = [
 _GROUNDING_TOOLS = [
     types.Tool(google_search=types.GoogleSearch()),
 ]
+
+# Small fixed thinking budget for the forced final-summary turn. Enough to stitch
+# together findings already gathered during investigation, but capped so the turn
+# cannot be spent entirely on thought tokens (which would emit no JSON text).
+SUMMARY_THINKING_BUDGET = 512
 
 
 # ---------------------------------------------------------------------------
@@ -316,24 +331,33 @@ class DeepReasoningAgent:
     async def _generate(
         self,
         contents: list[types.Content],
+        *,
+        summary: bool = False,
     ) -> types.GenerateContentResponse:
+        # On the forced final-summary turn we must guarantee a *text* answer.
+        # Dynamic thinking (-1) on Vertex AI can spend the whole turn on thought
+        # parts and return no text → empty response → JSON parse failure → 0 findings.
+        # Use a SMALL FIXED budget (not 0): enough to stitch together findings the
+        # investigation already gathered, but capped so it cannot starve the JSON
+        # output. Tools are dropped so the model cannot make another tool call.
+        thinking_budget = SUMMARY_THINKING_BUDGET if summary else -1
         if self._cache_name:
             # When using cached_content, system_instruction AND tools are already
             # embedded in the cache — passing them again causes 400 INVALID_ARGUMENT.
             config = types.GenerateContentConfig(
                 cached_content=self._cache_name,
                 temperature=0.1,
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
             )
         else:
             config = types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                tools=_GEMINI_TOOLS,
+                tools=None if summary else _GEMINI_TOOLS,
                 temperature=0.1,
                 # Dynamic thinking: Gemini 2.5 Pro decides reasoning depth per turn.
                 # Harder multi-file problems (saga, fencing token) get more thinking;
                 # simpler surface checks get less. -1 = model-controlled.
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
             )
         return await self._gemini.aio.models.generate_content(
             model=self._settings.gemini_model,
@@ -495,7 +519,31 @@ class DeepReasoningAgent:
                 parts=[types.Part(text="Please summarise your findings as JSON now.")],
             )
         )
-        response = await self._generate(contents)
+        text = await self._summarize(contents)
+        if text:
+            return text
+
+        # The forced-summary turn returned no usable text (e.g. a thought-only
+        # response). Retry ONCE with a strict instruction before giving up.
+        log.warning("summary_empty_retrying")
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part(text=(
+                    "Output ONLY the JSON array of findings now — no prose, no "
+                    "explanation, no markdown code fences. If you found nothing, "
+                    "output []."
+                ))],
+            )
+        )
+        text = await self._summarize(contents)
+        if not text:
+            log.warning("summary_empty_after_retry")
+        return text
+
+    async def _summarize(self, contents: list[types.Content]) -> str:
+        """Run a single forced-summary generation and return its non-thought text."""
+        response = await self._generate(contents, summary=True)
         if not response.candidates:
             log.warning("empty_candidates_at_summary", reason="safety_block_or_quota")
             return ""
@@ -652,10 +700,28 @@ class DeepReasoningAgent:
 
         log.warning("max_tool_rounds_reached", rounds=self._settings.max_tool_rounds)
         messages.append({"role": "user", "content": "Please summarise your findings as JSON now."})
+        # Force a text answer: tool_choice="none" so the model cannot make another
+        # tool call and must emit the JSON findings instead.
         response = await litellm.acompletion(
-            model=model, messages=messages, temperature=0.1
+            model=model, messages=messages, tools=tools, tool_choice="none", temperature=0.1
         )
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        if text:
+            return text
+
+        # Empty final response — retry ONCE with a strict instruction.
+        log.warning("summary_empty_retrying")
+        messages.append({"role": "user", "content": (
+            "Output ONLY the JSON array of findings now — no prose, no explanation, "
+            "no markdown code fences. If you found nothing, output []."
+        )})
+        response = await litellm.acompletion(
+            model=model, messages=messages, tools=tools, tool_choice="none", temperature=0.1
+        )
+        text = response.choices[0].message.content or ""
+        if not text:
+            log.warning("summary_empty_after_retry")
+        return text
 
     # ------------------------------------------------------------------
     # Citation enrichment (separate Google Search pass)
@@ -1022,13 +1088,27 @@ class DeepReasoningAgent:
                 rules_checked=0,
                 blocked=False,
             )
-            if post_comment:
+            if not post_comment:
+                result.delivery = "skipped"
+            elif await self._can_write(client, project_id):
                 comment = (
                     "## Quorum · Distributed Coordination Review\n\n"
                     "✅ No coordination surfaces detected in this diff. "
                     "No distributed locks, sagas, retries, idempotency, or messaging patterns found."
                 )
-                await client.create_workitem_note(project_id, mr_iid, comment)
+                try:
+                    await client.create_workitem_note(project_id, mr_iid, comment)
+                    result.delivery = "posted"
+                except Exception as exc:
+                    if _is_forbidden(exc):
+                        log.warning("post_forbidden_skipped", project_id=project_id)
+                        result.delivery = "read_only"
+                    else:
+                        raise
+            else:
+                # Read-only repo + nothing to report → skip the post entirely.
+                log.warning("read_only_mode", project_id=project_id, reason="insufficient_access")
+                result.delivery = "read_only"
             return result
 
         # ── Stage 2: DeepReasoningAgent (self) ───────────────────────
@@ -1105,7 +1185,20 @@ class DeepReasoningAgent:
         )
 
         # ── Stage 3: ReportFormatterAgent ────────────────────────────
-        if post_comment:
+        if not post_comment:
+            result.delivery = "skipped"
+            return result
+
+        # Pre-flight: detect read-only access so we skip the (doomed) post and
+        # write a local report instead of crashing on a 403. Unknown → attempt
+        # the post anyway; the 403 guard below catches a denial at write time.
+        if not await self._can_write(client, project_id):
+            log.warning("read_only_mode", project_id=project_id, reason="insufficient_access")
+            result.delivery = "read_only"
+            result.report_path = self._write_local_report(result, project_id, mr_iid)
+            return result
+
+        try:
             report_formatter = ReportFormatterAgent()
             if parse_error:
                 # Post an explicit error notice rather than a misleading "no issues" comment.
@@ -1122,20 +1215,69 @@ class DeepReasoningAgent:
                 await report_formatter.post_review(
                     result, client, project_id, mr_iid, mr_meta
                 )
+            result.delivery = "posted"
+        except Exception as exc:
+            # A read-only token may still reach here if the pre-flight probe was
+            # inconclusive. Treat 401/403 as no-write and fall back to a local
+            # report so findings are never lost; re-raise anything else.
+            if _is_forbidden(exc):
+                log.warning("post_forbidden_falling_back", project_id=project_id)
+                result.delivery = "read_only"
+                result.report_path = self._write_local_report(result, project_id, mr_iid)
+                return result
+            raise
 
-            # ── C3: MR Label Application ─────────────────────────────
-            if self._settings.apply_labels:
-                try:
-                    label = (
-                        "quorum-review::critical"
-                        if result.critical_count > 0
-                        else "quorum-review"
-                    )
-                    await client.apply_mr_labels(project_id, mr_iid, [label])
-                except Exception as exc:
-                    log.warning("label_application_failed", error=_scrub_secrets(str(exc))[:200])
+        # ── C3: MR Label Application ─────────────────────────────
+        if self._settings.apply_labels:
+            try:
+                label = (
+                    "quorum-review::critical"
+                    if result.critical_count > 0
+                    else "quorum-review"
+                )
+                await client.apply_mr_labels(project_id, mr_iid, [label])
+            except Exception as exc:
+                log.warning("label_application_failed", error=_scrub_secrets(str(exc))[:200])
 
         return result
+
+    async def _can_write(self, client: GitLabClientT, project_id: str) -> bool:
+        """Pre-flight: True if the token can post/push to the project.
+
+        Unknown / probe error → True (attempt the post; the 403 guard at the call
+        site handles a denial). A non-dict result is treated as unknown.
+        """
+        try:
+            perms = await client.get_project_permissions(project_id)
+            if isinstance(perms, dict):
+                return bool(perms.get("can_write", True))
+        except Exception:
+            pass
+        return True
+
+    def _write_local_report(self, result: ReviewResult, project_id: str, mr_iid: int) -> str | None:
+        """Write the review as a local Markdown + SARIF report (no write access needed).
+
+        Used when the GitLab token cannot post to the target repo. Returns the
+        Markdown path, or None if the files could not be written.
+        """
+        import re
+        from quorum.formatter import format_comment
+        from quorum.sarif import format_sarif
+
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{project_id}-{mr_iid}").strip("-")
+        md_path = f"quorum-report-{slug}.md"
+        sarif_path = f"quorum-report-{slug}.sarif"
+        try:
+            with open(md_path, "w", encoding="utf-8") as fh:
+                fh.write(format_comment(result))
+            with open(sarif_path, "w", encoding="utf-8") as fh:
+                fh.write(format_sarif(result))
+            log.info("local_report_written", md=md_path, sarif=sarif_path)
+            return md_path
+        except OSError as exc:
+            log.warning("local_report_write_failed", error=str(exc)[:200])
+            return None
 
 
 # Backward-compatible alias — all existing imports and tests continue to work.

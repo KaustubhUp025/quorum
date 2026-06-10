@@ -85,6 +85,7 @@ class GitLabClient(Protocol):
     ) -> str: ...
     async def list_mr_notes(self, project_id: str, mr_iid: int) -> list[dict]: ...
     async def get_project_languages(self, project_id: str) -> dict[str, float]: ...
+    async def get_project_permissions(self, project_id: str) -> dict: ...
     async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None: ...
     async def get_file_contributors(self, project_id: str, file_path: str) -> list[str]: ...
 
@@ -343,6 +344,10 @@ class GitLabGlabMCPClient:
     async def get_project_languages(self, project_id: str) -> dict[str, float]:
         assert self._rest is not None
         return await self._rest.get_project_languages(project_id)
+
+    async def get_project_permissions(self, project_id: str) -> dict:
+        assert self._rest is not None
+        return await self._rest.get_project_permissions(project_id)
 
     async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None:
         assert self._rest is not None
@@ -676,6 +681,10 @@ class GitLabYodaMCPClient:
     async def get_project_languages(self, project_id: str) -> dict[str, float]:
         assert self._rest is not None
         return await self._rest.get_project_languages(project_id)
+
+    async def get_project_permissions(self, project_id: str) -> dict:
+        assert self._rest is not None
+        return await self._rest.get_project_permissions(project_id)
 
     async def apply_mr_labels(self, project_id: str, mr_iid: int, labels: list[str]) -> None:
         assert self._rest is not None
@@ -1104,6 +1113,29 @@ class GitLabRESTClient:
             "visibility": p.get("visibility", "public"),
             "default_branch": p.get("default_branch", "main"),
         }
+
+    async def get_project_permissions(self, project_id: str) -> dict:
+        """Return the caller's access level on the project.
+
+        Reads ``permissions.project_access`` / ``permissions.group_access`` from
+        ``GET /projects/:id``. ``can_write`` is True at Developer (30) or above —
+        the minimum needed to post MR comments reliably and to push fix branches.
+        Used as a pre-flight check so reviews on read-only repos fall back to a
+        local report instead of crashing on a 403.
+        """
+        resp = await self._client.get(
+            f"{self._base}/projects/{self._pid(project_id)}"
+        )
+        if resp.status_code in (401, 403, 404):
+            return {"access_level": 0, "can_write": False, "error": f"http_{resp.status_code}"}
+        resp.raise_for_status()
+        perms = (resp.json().get("permissions") or {})
+        levels = [
+            (perms.get(k) or {}).get("access_level", 0) or 0
+            for k in ("project_access", "group_access")
+        ]
+        level = max(levels) if levels else 0
+        return {"access_level": level, "can_write": level >= 30}
 
     async def create_issue(self, project_id: str, title: str, body: str, labels: list[str] | None = None) -> dict:
         """Create a GitLab issue. Returns {'number': N, 'url': '...', 'blocked': False}."""

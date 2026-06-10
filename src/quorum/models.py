@@ -56,6 +56,12 @@ class ReviewResult(BaseModel):
     blocked: bool = False
     # Populated when QUORUM_CORRELATE_CI=true and a failing pipeline is found
     ci_correlation: str | None = None
+    # How the findings were delivered: "posted" (comment on the MR/PR),
+    # "read_only" (no write access → written to a local report instead), or
+    # "skipped" (post_comment was False, e.g. dry-run).
+    delivery: str = "posted"
+    # Path to the local Markdown report when delivery == "read_only".
+    report_path: str | None = None
 
     @property
     def critical_count(self) -> int:
