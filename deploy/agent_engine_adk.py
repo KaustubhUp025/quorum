@@ -69,15 +69,40 @@ def _read_secret(project: str, secret_id: str) -> str:
 
 
 def deploy(project: str, region: str) -> str:
+    import os
     import vertexai
     # NEW API — required for Agent Platform Playground recognition
     from vertexai import agent_engines
+
+    # Read tokens from Secret Manager FIRST and put them in the environment BEFORE
+    # importing the agent. adk_app builds the GitLab MCPToolset at import time from
+    # QUORUM_GITLAB_TOKEN + QUORUM_MCP_GATEWAY_URL; if those are absent at import,
+    # the toolset silently drops and the deployed agent loses its MCP tools.
+    print("==> Reading credentials from Secret Manager...")
+    gitlab_token = _read_secret(project, "quorum-gitlab-token")
+    github_token = _read_secret(project, "quorum-github-token")
+    gateway_url = os.getenv(
+        "QUORUM_MCP_GATEWAY_URL",
+        "https://quorum-mcp-gateway-3fnjzg6adq-uc.a.run.app/mcp",
+    )
+    if gitlab_token:
+        os.environ["QUORUM_GITLAB_TOKEN"] = gitlab_token
+    os.environ["QUORUM_MCP_GATEWAY_URL"] = gateway_url
 
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
     from quorum.adk_app import root_agent  # noqa: F401
 
     if root_agent is None:
         print("❌ google-adk is not installed. Run: pip install 'google-adk>=1.0.0'")
+        sys.exit(1)
+
+    # Fail loudly if the GitLab MCP toolset did not attach — otherwise we'd deploy
+    # an agent missing its partner-MCP integration (4 tools expected, not 3).
+    n_tools = len(getattr(root_agent, "tools", []))
+    has_mcp = any(type(t).__name__ == "MCPToolset" for t in getattr(root_agent, "tools", []))
+    print(f"==> root_agent tools: {n_tools} (GitLab MCPToolset attached: {has_mcp})")
+    if not has_mcp:
+        print("❌ GitLab MCPToolset NOT attached — aborting (check QUORUM_GITLAB_TOKEN).")
         sys.exit(1)
 
     bucket_name = f"quorum-ae-staging-{project}"[:63]
@@ -87,13 +112,6 @@ def deploy(project: str, region: str) -> str:
 
     print(f"==> Deploying ADK agent via vertexai.agent_engines ({project} / {region})...")
     print("    This uploads the package and provisions the engine — takes ~3 minutes.")
-
-    # Read tokens from Secret Manager at deploy time so the engine container
-    # receives them as plain env vars — avoids Secret Manager calls at runtime
-    # and removes the dependency on the engine SA having secretAccessor at runtime.
-    print("==> Reading credentials from Secret Manager...")
-    gitlab_token = _read_secret(project, "quorum-gitlab-token")
-    github_token = _read_secret(project, "quorum-github-token")
 
     # Runtime requirements for the Agent Engine container.
     requirements = [
