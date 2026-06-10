@@ -304,6 +304,10 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
                     mr_iid=iid,
                     client=client,
                     post_comment=(mode != "dry_run"),
+                    # The demo must always run a real review. Without force, the
+                    # "already reviewed" duplicate guard short-circuits post/fix
+                    # runs on a previously-reviewed MR and returns 0 findings.
+                    force=True,
                 )
             emit(
                 "done",
