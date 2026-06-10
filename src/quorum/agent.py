@@ -1088,13 +1088,27 @@ class DeepReasoningAgent:
                 rules_checked=0,
                 blocked=False,
             )
-            if post_comment:
+            if not post_comment:
+                result.delivery = "skipped"
+            elif await self._can_write(client, project_id):
                 comment = (
                     "## Quorum · Distributed Coordination Review\n\n"
                     "✅ No coordination surfaces detected in this diff. "
                     "No distributed locks, sagas, retries, idempotency, or messaging patterns found."
                 )
-                await client.create_workitem_note(project_id, mr_iid, comment)
+                try:
+                    await client.create_workitem_note(project_id, mr_iid, comment)
+                    result.delivery = "posted"
+                except Exception as exc:
+                    if _is_forbidden(exc):
+                        log.warning("post_forbidden_skipped", project_id=project_id)
+                        result.delivery = "read_only"
+                    else:
+                        raise
+            else:
+                # Read-only repo + nothing to report → skip the post entirely.
+                log.warning("read_only_mode", project_id=project_id, reason="insufficient_access")
+                result.delivery = "read_only"
             return result
 
         # ── Stage 2: DeepReasoningAgent (self) ───────────────────────
@@ -1178,17 +1192,7 @@ class DeepReasoningAgent:
         # Pre-flight: detect read-only access so we skip the (doomed) post and
         # write a local report instead of crashing on a 403. Unknown → attempt
         # the post anyway; the 403 guard below catches a denial at write time.
-        can_write = True
-        try:
-            perms = await client.get_project_permissions(project_id)
-            # Only trust an explicit dict result; anything else → attempt the post
-            # and let the 403 guard below handle a denial.
-            if isinstance(perms, dict):
-                can_write = bool(perms.get("can_write", True))
-        except Exception:
-            can_write = True
-
-        if not can_write:
+        if not await self._can_write(client, project_id):
             log.warning("read_only_mode", project_id=project_id, reason="insufficient_access")
             result.delivery = "read_only"
             result.report_path = self._write_local_report(result, project_id, mr_iid)
@@ -1236,6 +1240,20 @@ class DeepReasoningAgent:
                 log.warning("label_application_failed", error=_scrub_secrets(str(exc))[:200])
 
         return result
+
+    async def _can_write(self, client: GitLabClientT, project_id: str) -> bool:
+        """Pre-flight: True if the token can post/push to the project.
+
+        Unknown / probe error → True (attempt the post; the 403 guard at the call
+        site handles a denial). A non-dict result is treated as unknown.
+        """
+        try:
+            perms = await client.get_project_permissions(project_id)
+            if isinstance(perms, dict):
+                return bool(perms.get("can_write", True))
+        except Exception:
+            pass
+        return True
 
     def _write_local_report(self, result: ReviewResult, project_id: str, mr_iid: int) -> str | None:
         """Write the review as a local Markdown + SARIF report (no write access needed).

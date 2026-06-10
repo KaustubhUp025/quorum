@@ -200,3 +200,37 @@ class TestLocalReportFallback:
         assert result.delivery == "read_only"
         mock_post.assert_not_awaited()  # never even attempted the post
         assert (tmp_path / result.report_path).exists()
+
+    @pytest.mark.asyncio
+    async def test_no_surfaces_readonly_does_not_post(self):
+        # The no-surfaces early-return path must ALSO respect read-only access
+        # (this was the gap: it posted to third-party MRs regardless).
+        agent = _make_agent()
+        client = AsyncMock()
+        client.get_merge_request_diffs.return_value = "+ x = 1\n+ print('hello')\n"  # no surfaces
+        client.get_mr_metadata.return_value = {"source_branch": "f", "target_branch": "main"}
+        client.get_project_languages.return_value = {}
+        client.get_project_permissions.return_value = {"access_level": 0, "can_write": False}
+
+        result = await agent.review("some-org/some-repo", 16, client,
+                                    post_comment=True, force=True)
+
+        assert result.surfaces_detected == 0
+        assert result.delivery == "read_only"
+        client.create_workitem_note.assert_not_awaited()  # no spam on a read-only repo
+
+    @pytest.mark.asyncio
+    async def test_no_surfaces_writable_posts(self):
+        agent = _make_agent()
+        client = AsyncMock()
+        client.get_merge_request_diffs.return_value = "+ x = 1\n+ print('hello')\n"
+        client.get_mr_metadata.return_value = {"source_branch": "f", "target_branch": "main"}
+        client.get_project_languages.return_value = {}
+        client.get_project_permissions.return_value = {"access_level": 40, "can_write": True}
+
+        result = await agent.review("my-org/my-repo", 16, client,
+                                    post_comment=True, force=True)
+
+        assert result.surfaces_detected == 0
+        assert result.delivery == "posted"
+        client.create_workitem_note.assert_awaited_once()
