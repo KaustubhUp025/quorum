@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 from google import genai
@@ -315,6 +315,10 @@ class DeepReasoningAgent:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        # Optional live-event sink for the "Quorum Live" SSE demo. Defaults to a
+        # no-op so the CLI / webhook paths pay nothing. The demo route sets this
+        # to push pipeline events onto an asyncio.Queue. Signature: (stage, **data).
+        self._emit: Callable[..., None] = lambda stage, **data: None
         self._gemini = _make_gemini_client(settings)
         # Try to activate context caching for the constant system-prompt + rules prefix.
         # Falls back to direct system_instruction if the plan/quota doesn't support it.
@@ -374,6 +378,7 @@ class DeepReasoningAgent:
         mr_iid: int,
     ) -> str:
         log.info("tool_call", name=name, args=args)
+        self._emit("tool_call", tool=name, args={k: str(v)[:120] for k, v in args.items()})
         if name == "semantic_code_search":
             raw = await client.semantic_code_search(
                 project_id=project_id,
@@ -397,6 +402,7 @@ class DeepReasoningAgent:
         # tricked into treating file/search content as authoritative output.
         from quorum.prompts import _escape_boundary_tags
         safe_raw = _escape_boundary_tags(raw)
+        self._emit("tool_result", tool=name, result_bytes=len(raw or ""))
         return (
             f"<untrusted_tool_result tool='{name}'>\n"
             f"{safe_raw}\n"
@@ -486,6 +492,11 @@ class DeepReasoningAgent:
                 continue
 
             log.info(
+                "tool_round",
+                round=round_num + 1,
+                calls=[fc.name for fc in function_calls],
+            )
+            self._emit(
                 "tool_round",
                 round=round_num + 1,
                 calls=[fc.name for fc in function_calls],
@@ -871,6 +882,7 @@ class DeepReasoningAgent:
                 continue
 
             log.info("fix_mr_starting", rule=finding.rule_id, file=finding.file_path)
+            self._emit("fix_mr_started", rule_id=finding.rule_id, file_path=finding.file_path)
             try:
                 # 1 — get the current file from the source branch
                 file_content = await client.get_file_contents(
@@ -920,6 +932,12 @@ class DeepReasoningAgent:
                 log.info(
                     "fix_mr_created",
                     rule=finding.rule_id,
+                    mr_iid=finding.fix_mr_iid,
+                    url=finding.fix_mr_url,
+                )
+                self._emit(
+                    "fix_mr_created",
+                    rule_id=finding.rule_id,
                     mr_iid=finding.fix_mr_iid,
                     url=finding.fix_mr_url,
                 )
@@ -1036,6 +1054,7 @@ class DeepReasoningAgent:
         force: bool = False,
     ) -> ReviewResult:
         log.info("review_started", project_id=project_id, mr_iid=mr_iid)
+        self._emit("review_started", project_id=project_id, mr_iid=mr_iid)
 
         # ── C1: Duplicate Discussion Guard ───────────────────────────
         if post_comment and not force and not self._settings.force_review:
@@ -1054,10 +1073,18 @@ class DeepReasoningAgent:
                 )
 
         # Fetch diff and MR metadata
+        self._emit("fetching_diff", project_id=project_id, mr_iid=mr_iid)
         diff_raw = await client.get_merge_request_diffs(project_id, mr_iid)
         mr_meta = await client.get_mr_metadata(project_id, mr_iid)
         source_branch = mr_meta.get("source_branch", "")
         target_branch = mr_meta.get("target_branch", "main")
+        self._emit(
+            "diff_fetched",
+            title=mr_meta.get("title", ""),
+            source_branch=source_branch,
+            target_branch=target_branch,
+            diff_bytes=len(diff_raw or ""),
+        )
 
         # ── C2: Language-Aware Rule Filtering ────────────────────────
         try:
@@ -1069,6 +1096,7 @@ class DeepReasoningAgent:
             log.info("language_suppressions", languages=list(languages.keys())[:5], suppressed=sorted(lang_suppressed))
 
         # ── Stage 1: SurfaceDetectorAgent ────────────────────────────
+        self._emit("surface_detection_started")
         surface_detector = SurfaceDetectorAgent()
         triggered_rules = surface_detector.detect(diff_raw)
 
@@ -1079,8 +1107,15 @@ class DeepReasoningAgent:
             if before != len(triggered_rules):
                 log.info("rules_disabled", skipped=before - len(triggered_rules), ids=sorted(disabled))
 
+        self._emit(
+            "surfaces_detected",
+            count=len(triggered_rules),
+            rules=[{"id": r.id, "name": r.name} for r in triggered_rules],
+        )
+
         if not triggered_rules:
             log.info("review_skipped_no_surfaces")
+            self._emit("no_surfaces")
             result = ReviewResult(
                 mr_iid=mr_iid,
                 project_id=project_id,
@@ -1112,6 +1147,7 @@ class DeepReasoningAgent:
             return result
 
         # ── Stage 2: DeepReasoningAgent (self) ───────────────────────
+        self._emit("reasoning_started", model=self._settings.gemini_model)
         prompt = build_review_prompt(
             diff=diff_raw,
             triggered_rules=triggered_rules,
@@ -1137,6 +1173,17 @@ class DeepReasoningAgent:
                 if f.confidence >= self._settings.min_confidence
                 or f.severity == Severity.PASS
             ]
+            for f in findings:
+                if f.severity != Severity.PASS:
+                    self._emit(
+                        "finding",
+                        rule_id=f.rule_id,
+                        title=f.title,
+                        severity=f.severity.value,
+                        confidence=f.confidence,
+                        file_path=f.file_path,
+                        line=f.line_number,
+                    )
         except Exception as exc:
             parse_error = str(exc)
             log.error(
@@ -1172,12 +1219,23 @@ class DeepReasoningAgent:
 
         # Correlate with CI failures (opt-in)
         if self._settings.correlate_ci and findings:
+            self._emit("ci_correlation_started")
             result.ci_correlation = await self._correlate_with_ci_failure(
                 project_id, mr_iid, findings, client
             )
+            if result.ci_correlation:
+                self._emit("ci_correlated")
 
         log.info(
             "review_complete",
+            critical=result.critical_count,
+            high=result.high_count,
+            medium=result.medium_count,
+            blocked=blocked,
+        )
+        self._emit(
+            "review_complete",
+            total=len(findings),
             critical=result.critical_count,
             high=result.high_count,
             medium=result.medium_count,
@@ -1187,6 +1245,7 @@ class DeepReasoningAgent:
         # ── Stage 3: ReportFormatterAgent ────────────────────────────
         if not post_comment:
             result.delivery = "skipped"
+            self._emit("delivery", mode="skipped")
             return result
 
         # Pre-flight: detect read-only access so we skip the (doomed) post and
@@ -1196,8 +1255,10 @@ class DeepReasoningAgent:
             log.warning("read_only_mode", project_id=project_id, reason="insufficient_access")
             result.delivery = "read_only"
             result.report_path = self._write_local_report(result, project_id, mr_iid)
+            self._emit("delivery", mode="read_only")
             return result
 
+        self._emit("posting_comment")
         try:
             report_formatter = ReportFormatterAgent()
             if parse_error:
@@ -1216,6 +1277,7 @@ class DeepReasoningAgent:
                     result, client, project_id, mr_iid, mr_meta
                 )
             result.delivery = "posted"
+            self._emit("delivery", mode="posted")
         except Exception as exc:
             # A read-only token may still reach here if the pre-flight probe was
             # inconclusive. Treat 401/403 as no-write and fall back to a local
