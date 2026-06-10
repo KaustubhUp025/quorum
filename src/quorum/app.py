@@ -39,6 +39,10 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _MAX_CONCURRENT_DEMO_REVIEWS = 2
 _active_demo_reviews = 0
 
+# Heartbeat interval for the SSE demo stream — keeps the connection alive through
+# long idle gaps (e.g. Gemini thinking before its first tool call).
+_SSE_KEEPALIVE_SECONDS = 10
+
 
 def parse_mr_url(url: str) -> dict | None:
     """Parse a GitLab MR or GitHub PR URL into platform / project_id / iid.
@@ -300,7 +304,16 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
         # Announce immediately so the page knows the stream is live.
         yield _sse({"event": "connected", "platform": platform, "project_id": project_id, "iid": iid, "mode": mode})
         while True:
-            item = await queue.get()
+            # Gemini can "think" for 60-90s between events (e.g. before its first
+            # tool call), leaving the SSE connection idle. Cloud Run / proxies /
+            # the browser drop an idle connection, so emit an SSE keepalive comment
+            # every few seconds when no real event is queued. Comment lines
+            # (": ...") are ignored by EventSource but keep the socket warm.
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_SECONDS)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
             if item is None:
                 break
             yield _sse(item)
