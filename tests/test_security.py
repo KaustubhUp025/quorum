@@ -244,6 +244,26 @@ class TestWebhookSecurity:
         with pytest.raises(RuntimeError, match="QUORUM_WEBHOOK_SECRET"):
             create_app(settings)
 
+    def test_webhook_ignores_quorum_fix_branches(self):
+        """Loop prevention: an MR whose source branch is quorum-fix/* must be ignored,
+        so Quorum never reviews its own fix MRs (which would self-trigger forever)."""
+        from quorum.app import create_app
+        from fastapi.testclient import TestClient
+
+        settings = Settings(gemini_api_key="test", gitlab_token="test", webhook_secret="s")
+        client = TestClient(create_app(settings), raise_server_exceptions=False)
+        resp = client.post(
+            "/webhook/gitlab",
+            headers={"X-Gitlab-Event": "Merge Request Hook", "X-Gitlab-Token": "s"},
+            json={
+                "object_attributes": {"iid": 99, "action": "open", "source_branch": "quorum-fix/rule-09-123"},
+                "project": {"path_with_namespace": "org/repo"},
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        assert "loop prevention" in resp.json()["reason"]
+
 
 # ---------------------------------------------------------------------------
 # SSRF-03: GitHub file path URL encoding

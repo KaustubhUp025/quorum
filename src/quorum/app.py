@@ -65,6 +65,13 @@ def create_app(settings: Settings) -> FastAPI:
         if mr_action not in ("open", "reopen", "update"):
             return JSONResponse({"status": "ignored", "reason": f"mr action '{mr_action}' not reviewed"})
 
+        # Loop prevention: never review Quorum's own fix MRs. Without this, creating a
+        # fix MR fires this same webhook, which reviews the fix and may open another
+        # fix MR — an infinite self-triggering loop that spawns MRs and burns API calls.
+        source_branch = mr.get("source_branch", "") or ""
+        if source_branch.startswith("quorum-fix/"):
+            return JSONResponse({"status": "ignored", "reason": "quorum-authored fix MR (loop prevention)"})
+
         project = payload.get("project", {})
         # Use namespace path (e.g. "group/project") — glab needs this to build a valid
         # git remote URL. Numeric project.id would produce https://gitlab.com/12345.git

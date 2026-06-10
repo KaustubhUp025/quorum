@@ -1261,13 +1261,20 @@ class DeepReasoningAgent:
         Used when the GitLab token cannot post to the target repo. Returns the
         Markdown path, or None if the files could not be written.
         """
+        import os
         import re
+        import tempfile
         from quorum.formatter import format_comment
         from quorum.sarif import format_sarif
 
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{project_id}-{mr_iid}").strip("-")
-        md_path = f"quorum-report-{slug}.md"
-        sarif_path = f"quorum-report-{slug}.sarif"
+        # Prefer the current working directory (useful for the CLI), but fall back to a
+        # writable temp dir when CWD is read-only (e.g. the non-root Cloud Run container).
+        base_dir = os.getcwd()
+        if not os.access(base_dir, os.W_OK):
+            base_dir = tempfile.gettempdir()
+        md_path = os.path.join(base_dir, f"quorum-report-{slug}.md")
+        sarif_path = os.path.join(base_dir, f"quorum-report-{slug}.sarif")
         try:
             with open(md_path, "w", encoding="utf-8") as fh:
                 fh.write(format_comment(result))
