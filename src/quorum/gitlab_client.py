@@ -213,7 +213,9 @@ class GitLabGlabMCPClient:
 
     async def get_merge_request(self, project_id: str, mr_iid: int) -> str:
         if "glab_mr_view" in self._available_tools:
-            return await self._call("glab_mr_view", args=[str(mr_iid)])
+            # limit is the glab MCP output CHAR cap (default 2000) — MR title +
+            # description + notes routinely exceed that, so raise it.
+            return await self._call("glab_mr_view", args=[str(mr_iid)], limit=8000)
         assert self._rest is not None
         return await self._rest.get_merge_request(project_id, mr_iid)
 
@@ -233,9 +235,13 @@ class GitLabGlabMCPClient:
         self, project_id: str, query: str, max_results: int = 5
     ) -> str:
         if "glab_search_semantic" in self._available_tools:
+            # flags["limit"] = result COUNT; the _call limit= is the output CHAR
+            # cap (default 2000). Multi-file snippets need far more room, else the
+            # agent only ever sees the first ~2 KB of evidence.
             result = await self._call(
                 "glab_search_semantic",
                 flags={"query": query, "limit": max_results},
+                limit=12000,
             )
             result_lower = result.lower()
             is_error = "[GLAB ERROR]" in result or any(

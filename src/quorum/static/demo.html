@@ -93,35 +93,45 @@
   <!-- ── Live Playground ─────────────────────────────────────────── -->
   <section id="playground" class="max-w-7xl mx-auto px-5 py-16" x-data="quorumDemo()">
     <div class="text-center mb-10">
-      <h2 class="text-3xl font-bold text-white">Live review playground</h2>
-      <p class="mt-3 text-slate-400">Paste a GitLab MR or GitHub PR URL and watch the agent investigate in real time.</p>
+      <h2 class="text-4xl font-bold text-white">Live review playground</h2>
+      <p class="mt-4 text-lg text-slate-400">Paste a GitLab MR or GitHub PR URL and watch the agent investigate in real time.</p>
     </div>
 
     <!-- Input bar -->
-    <div class="glass border border-slate-800 rounded-2xl p-5 max-w-4xl mx-auto">
+    <div class="glass border border-slate-800 rounded-2xl p-6 max-w-4xl mx-auto">
       <div class="flex flex-col md:flex-row gap-3">
         <input x-model="url" type="text" spellcheck="false"
                placeholder="https://gitlab.com/group/project/-/merge_requests/1"
-               class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+               class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-base font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
         <button @click="run()" :disabled="running"
-                class="px-6 py-3 rounded-xl bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold transition whitespace-nowrap">
-          <span x-show="!running">Run review</span>
+                class="px-7 py-3.5 rounded-xl bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-base transition whitespace-nowrap">
+          <span x-show="!running">▶ Run review</span>
           <span x-show="running" x-cloak>Reviewing…</span>
         </button>
       </div>
-      <div class="flex flex-wrap items-center gap-4 mt-4 text-sm">
-        <span class="text-slate-500">Mode:</span>
-        <template x-for="m in modes" :key="m.id">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input type="radio" :value="m.id" x-model="mode" class="accent-brand-500" />
-            <span class="text-slate-300" x-text="m.label"></span>
-            <span class="text-slate-500 text-xs" x-text="m.hint"></span>
-          </label>
-        </template>
+
+      <!-- Mode toggle (these DO drive the review: dry_run / post / fix → /demo/stream?mode=) -->
+      <div class="flex flex-wrap items-center gap-3 mt-5">
+        <span class="text-slate-400 text-base font-medium">Mode</span>
+        <div class="inline-flex rounded-xl bg-slate-900 border border-slate-700 p-1">
+          <template x-for="m in modes" :key="m.id">
+            <button @click="mode = m.id" type="button"
+                    class="px-4 py-2 rounded-lg text-sm font-semibold transition"
+                    :class="mode===m.id ? 'bg-brand-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'">
+              <span x-text="m.label"></span>
+              <span class="hidden sm:inline opacity-70 font-normal" x-text="' · '+m.hint"></span>
+            </button>
+          </template>
+        </div>
         <button @click="url='https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1'"
-                class="ml-auto text-brand-400 hover:text-brand-300 text-xs">Use the demo MR →</button>
+                type="button"
+                class="ml-auto px-4 py-2 rounded-lg text-sm font-medium border border-brand-500/40 text-brand-300 hover:bg-brand-500/10 transition">
+          ↳ Load the demo MR
+        </button>
       </div>
-      <p x-show="error" x-cloak class="mt-3 text-sm text-red-400" x-text="error"></p>
+      <!-- live explanation of the selected mode -->
+      <p class="mt-3 text-sm text-slate-400" x-text="modes.find(m => m.id===mode).desc"></p>
+      <p x-show="error" x-cloak class="mt-3 text-base text-red-400" x-text="error"></p>
     </div>
 
     <!-- 3-pane live view -->
@@ -129,7 +139,7 @@
 
       <!-- Pane 1: Pipeline -->
       <div class="glass border border-slate-800 rounded-2xl p-5">
-        <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-4">Pipeline</h3>
+        <h3 class="text-base font-semibold text-slate-300 uppercase tracking-wide mb-4">Pipeline</h3>
         <ol class="space-y-3">
           <template x-for="s in stages" :key="s.id">
             <li class="flex items-start gap-3">
@@ -153,8 +163,8 @@
 
       <!-- Pane 2: Agent trace -->
       <div class="glass border border-slate-800 rounded-2xl p-5">
-        <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide mb-4">Agent trace</h3>
-        <div class="trace space-y-2 max-h-[460px] overflow-y-auto font-mono text-xs pr-1">
+        <h3 class="text-base font-semibold text-slate-300 uppercase tracking-wide mb-4">Agent trace</h3>
+        <div class="trace space-y-2 max-h-[460px] overflow-y-auto font-mono text-sm pr-1">
           <template x-for="(t,i) in trace" :key="i">
             <div class="fade-in flex items-start gap-2"
                  :class="{
@@ -175,7 +185,7 @@
       <!-- Pane 3: Findings -->
       <div class="glass border border-slate-800 rounded-2xl p-5">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wide">Findings</h3>
+          <h3 class="text-base font-semibold text-slate-300 uppercase tracking-wide">Findings</h3>
           <span x-show="findings.length" x-cloak class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300"
                 x-text="findings.length + ' found'"></span>
         </div>
@@ -184,59 +194,91 @@
             <div class="fade-in border rounded-xl p-3"
                  :class="sevBorder(f.severity)">
               <div class="flex items-center justify-between gap-2">
-                <span class="text-xs font-mono text-slate-400" x-text="f.rule_id"></span>
-                <span class="text-[10px] font-bold px-2 py-0.5 rounded-full" :class="sevBadge(f.severity)"
+                <span class="text-sm font-mono text-slate-400" x-text="f.rule_id"></span>
+                <span class="text-xs font-bold px-2 py-0.5 rounded-full" :class="sevBadge(f.severity)"
                       x-text="f.severity + ' · ' + f.confidence + '%'"></span>
               </div>
-              <div class="text-sm text-slate-100 mt-1 font-medium" x-text="f.title"></div>
-              <div class="text-xs text-slate-500 mt-1 font-mono" x-show="f.file_path"
+              <div class="text-base text-slate-100 mt-1 font-medium" x-text="f.title"></div>
+              <div class="text-sm text-slate-500 mt-1 font-mono" x-show="f.file_path"
                    x-text="f.file_path + (f.line ? ':'+f.line : '')"></div>
               <a x-show="f.url" x-cloak :href="f.url" target="_blank" rel="noopener"
-                 class="inline-block mt-2 text-xs text-brand-400 hover:text-brand-300">🔧 Draft fix MR →</a>
+                 class="inline-block mt-2 text-sm text-brand-400 hover:text-brand-300">🔧 Draft fix MR →</a>
             </div>
           </template>
-          <div x-show="findings.length===0 && !running" class="text-slate-600 text-sm" x-cloak>No findings yet.</div>
-          <div x-show="findings.length===0 && running" class="text-slate-500 text-sm">Investigating…</div>
+          <div x-show="findings.length===0 && !running" class="text-slate-600 text-base" x-cloak>No findings yet.</div>
+          <div x-show="findings.length===0 && running" class="text-slate-500 text-base">Investigating…</div>
         </div>
 
         <!-- Verdict -->
         <div x-show="verdict" x-cloak class="mt-4 pt-4 border-t border-slate-800">
-          <div class="text-sm font-semibold" :class="verdict.blocked ? 'text-red-400' : 'text-emerald-400'"
+          <div class="text-base font-semibold" :class="verdict.blocked ? 'text-red-400' : 'text-emerald-400'"
                x-text="verdict.text"></div>
-          <div class="text-xs text-slate-500 mt-1" x-text="verdict.detail"></div>
+          <div class="text-sm text-slate-500 mt-1" x-text="verdict.detail"></div>
         </div>
       </div>
+    </div>
+
+    <!-- ── What happens next (post-review guidance) ──────────────── -->
+    <div x-show="nextSteps.length" x-cloak class="mt-6 max-w-4xl mx-auto glass border border-brand-500/30 rounded-2xl p-6 fade-in">
+      <h3 class="text-lg font-semibold text-white flex items-center gap-2">
+        <span>🧭</span> What happens next
+      </h3>
+      <ul class="mt-4 space-y-3">
+        <template x-for="(step, i) in nextSteps" :key="i">
+          <li class="flex items-start gap-3 text-base text-slate-300">
+            <span class="text-brand-400 mt-0.5" x-text="step.icon"></span>
+            <span x-html="step.html"></span>
+          </li>
+        </template>
+      </ul>
+      <p x-show="verdict && verdict.blocked" x-cloak class="mt-4 pt-4 border-t border-slate-800 text-base text-slate-300">
+        <span class="text-emerald-400 font-semibold">Does Quorum stop when an MR is blocked?</span>
+        No — "blocked" only marks the merge as unsafe. Quorum still posts every finding and, in
+        <span class="font-mono text-brand-300">Fix</span> mode, opens a draft fix MR for each critical bug.
+        Merge a fix MR and the Cloud Run webhook automatically re-reviews the branch — so it's a loop:
+        <span class="text-slate-400">detect → fix MR → re-review → unblock</span>.
+      </p>
     </div>
   </section>
 
   <!-- ── MCP story ───────────────────────────────────────────────── -->
   <section id="mcp" class="bg-slate-900/40 border-y border-slate-800">
-    <div class="max-w-7xl mx-auto px-5 py-16">
-      <div class="text-center mb-12">
-        <h2 class="text-3xl font-bold text-white">Built on GitLab's MCP server</h2>
-        <p class="mt-3 text-slate-400 max-w-2xl mx-auto">
+    <div class="max-w-7xl mx-auto px-5 py-16" x-data="archDiagram()">
+      <div class="text-center mb-10">
+        <h2 class="text-4xl font-bold text-white">Built on GitLab's MCP server</h2>
+        <p class="mt-4 text-lg text-slate-400 max-w-2xl mx-auto">
           The agent's superpower is <span class="text-brand-400 font-medium">semantic_code_search</span> over
-          GitLab's MCP server — it reasons across the whole repository, not just the diff. Try it yourself
-          live in the Agent Engine Playground.
+          GitLab's MCP server — it reasons across the whole repository, not just the diff.
+          <span class="text-slate-500">Click any stage below to see what it does.</span>
         </p>
       </div>
 
-      <!-- architecture flow -->
-      <div class="grid md:grid-cols-5 gap-3 items-stretch text-center text-sm">
-        <div class="glass border border-slate-800 rounded-xl p-4">
-          <div class="text-brand-400 font-semibold">Playground / Web UI</div>
-          <div class="text-xs text-slate-500 mt-1">paste an MR URL or chat</div>
+      <!-- interactive architecture flow -->
+      <div class="flex flex-col md:flex-row items-stretch justify-center gap-2 md:gap-0">
+        <template x-for="(node, i) in nodes" :key="node.id">
+          <div class="flex flex-col md:flex-row items-stretch">
+            <button @click="sel = node.id" type="button"
+                    class="group glass border rounded-xl p-5 text-center md:w-44 transition"
+                    :class="sel===node.id ? 'border-brand-500 ring-2 ring-brand-500/40' : 'border-slate-800 hover:border-brand-500/50'">
+              <div class="text-3xl" x-text="node.icon"></div>
+              <div class="text-base font-semibold mt-2" :class="sel===node.id ? 'text-brand-300' : 'text-brand-400'" x-text="node.title"></div>
+              <div class="text-sm text-slate-500 mt-1" x-text="node.sub"></div>
+            </button>
+            <div x-show="i < nodes.length-1" class="flex items-center justify-center text-2xl text-brand-500/60 px-1 rotate-90 md:rotate-0">→</div>
+          </div>
+        </template>
+      </div>
+
+      <!-- detail panel -->
+      <div class="mt-6 max-w-3xl mx-auto glass border border-slate-800 rounded-xl p-6 fade-in" :key="sel">
+        <div class="flex items-center gap-3">
+          <span class="text-3xl" x-text="current().icon"></span>
+          <div>
+            <div class="text-lg font-semibold text-white" x-text="current().title"></div>
+            <div class="text-sm text-brand-400 font-mono" x-text="current().tech"></div>
+          </div>
         </div>
-        <div class="hidden md:flex items-center justify-center text-slate-600">→</div>
-        <div class="glass border border-slate-800 rounded-xl p-4">
-          <div class="text-brand-400 font-semibold">ADK Agent (Vertex)</div>
-          <div class="text-xs text-slate-500 mt-1">Gemini + MCPToolset</div>
-        </div>
-        <div class="hidden md:flex items-center justify-center text-slate-600">→</div>
-        <div class="glass border border-slate-800 rounded-xl p-4">
-          <div class="text-brand-400 font-semibold">Cloud Run MCP gateway</div>
-          <div class="text-xs text-slate-500 mt-1">read-only → GitLab</div>
-        </div>
+        <p class="mt-4 text-base text-slate-300 leading-relaxed" x-text="current().detail"></p>
       </div>
 
       <div class="mt-8 max-w-3xl mx-auto bg-slate-950 border border-slate-800 rounded-xl p-5 font-mono text-sm">
@@ -245,26 +287,34 @@
         <div class="mt-1 text-brand-400">Quorum: [calls GitLab MCP tool get_merge_request_diffs over the network]</div>
         <div class="text-slate-400">        MR 1 changes 6 files: lock_manager.py, saga_orchestrator.py, …</div>
       </div>
+
+      <div class="mt-6 text-center">
+        <a href="https://console.cloud.google.com/agent-platform/agents/1659372503279075328/playground?project=gen-lang-client-0294573094"
+           target="_blank" rel="noopener"
+           class="inline-block px-6 py-3 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-semibold transition">
+          Try it live in the Agent Engine Playground →
+        </a>
+      </div>
     </div>
   </section>
 
   <!-- ── Rules ───────────────────────────────────────────────────── -->
   <section id="rules" class="max-w-7xl mx-auto px-5 py-16" x-data="{ rules: window.QUORUM_RULES, open:null }">
     <div class="text-center mb-10">
-      <h2 class="text-3xl font-bold text-white">14 coordination rules</h2>
-      <p class="mt-3 text-slate-400">A named taxonomy from Kleppmann, AWS, microservices.io, Confluent and the Google SRE book.</p>
+      <h2 class="text-4xl font-bold text-white">14 coordination rules</h2>
+      <p class="mt-4 text-lg text-slate-400">A named taxonomy from Kleppmann, AWS, microservices.io, Confluent and the Google SRE book.</p>
     </div>
     <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
       <template x-for="r in rules" :key="r.id">
         <button @click="open = open===r.id ? null : r.id"
                 class="text-left glass border border-slate-800 hover:border-brand-500/50 rounded-xl p-4 transition">
           <div class="flex items-center justify-between">
-            <span class="font-mono text-xs text-brand-400" x-text="r.id"></span>
+            <span class="font-mono text-sm text-brand-400" x-text="r.id"></span>
           </div>
-          <div class="text-sm font-semibold text-slate-100 mt-1" x-text="r.name"></div>
-          <div class="text-xs text-slate-400 mt-2 leading-relaxed"
+          <div class="text-base font-semibold text-slate-100 mt-1" x-text="r.name"></div>
+          <div class="text-sm text-slate-400 mt-2 leading-relaxed"
                :class="open===r.id ? '' : 'line-clamp-2'" x-text="r.description"></div>
-          <div class="text-[11px] text-slate-600 mt-2" x-text="r.reference"></div>
+          <div class="text-xs text-slate-600 mt-2" x-text="r.reference"></div>
         </button>
       </template>
     </div>
@@ -274,23 +324,23 @@
   <section id="architecture" class="bg-slate-900/40 border-y border-slate-800">
     <div class="max-w-7xl mx-auto px-5 py-16">
       <div class="text-center mb-10">
-        <h2 class="text-3xl font-bold text-white">Three ways to run it</h2>
+        <h2 class="text-4xl font-bold text-white">Three ways to run it</h2>
       </div>
       <div class="grid md:grid-cols-3 gap-5">
         <div class="glass border border-slate-800 rounded-2xl p-6">
           <div class="text-2xl">⌨️</div>
           <h3 class="font-semibold text-white mt-3">CLI</h3>
-          <p class="text-sm text-slate-400 mt-2"><code class="text-brand-400">quorum review group/project 1</code> — local review, SARIF output for GitHub Code Scanning.</p>
+          <p class="text-base text-slate-400 mt-2"><code class="text-brand-400">quorum review group/project 1</code> — local review, SARIF output for GitHub Code Scanning.</p>
         </div>
         <div class="glass border border-slate-800 rounded-2xl p-6">
           <div class="text-2xl">🪝</div>
           <h3 class="font-semibold text-white mt-3">Cloud Run webhook</h3>
-          <p class="text-sm text-slate-400 mt-2">A GitLab MR webhook triggers an automatic review, inline comments, and draft fix MRs — secret-validated.</p>
+          <p class="text-base text-slate-400 mt-2">A GitLab MR webhook triggers an automatic review, inline comments, and draft fix MRs — secret-validated.</p>
         </div>
         <div class="glass border border-slate-800 rounded-2xl p-6">
           <div class="text-2xl">🤖</div>
           <h3 class="font-semibold text-white mt-3">Agent Engine Playground</h3>
-          <p class="text-sm text-slate-400 mt-2">A Vertex AI ADK agent that calls GitLab's MCP server live — chat with the reviewer.</p>
+          <p class="text-base text-slate-400 mt-2">A Vertex AI ADK agent that calls GitLab's MCP server live — chat with the reviewer.</p>
         </div>
       </div>
       <div class="mt-8 grid sm:grid-cols-3 gap-4 text-center text-sm">
@@ -329,14 +379,38 @@
 
   <!-- ── Playground logic ────────────────────────────────────────── -->
   <script>
+    function archDiagram() {
+      return {
+        sel: 'gateway',
+        nodes: [
+          { id: 'ui', icon: '🧑‍💻', title: 'You', sub: 'Playground / Web UI',
+            tech: 'paste an MR URL · or chat',
+            detail: 'You either paste a GitLab MR / GitHub PR URL into this Quorum Live page, or chat with the agent in the Vertex AI Agent Engine Playground. Both entry points drive the same review pipeline.' },
+          { id: 'agent', icon: '🤖', title: 'ADK Agent', sub: 'Gemini 2.5 Pro',
+            tech: 'Vertex AI · google-adk · MCPToolset',
+            detail: 'A Gemini 2.5 Pro agent runs the multi-turn investigation loop. It holds a remote MCPToolset (Streamable HTTP) so it can call GitLab tools — get_merge_request, get_file_contents and the semantic_code_search superpower — as real function calls over the network.' },
+          { id: 'gateway', icon: '🛰️', title: 'MCP Gateway', sub: 'Cloud Run · read-only',
+            tech: 'Cloud Run · @zereight/mcp-gitlab',
+            detail: 'A read-only GitLab MCP server runs on Cloud Run (Streamable HTTP, per-request PAT, min-instances=1 to stay warm). This is the partner-MCP centerpiece: the agent speaks the Model Context Protocol to reach GitLab, instead of bespoke REST glue.' },
+          { id: 'gitlab', icon: '🦊', title: 'GitLab', sub: 'your repo',
+            tech: 'gitlab.com · REST + AI search',
+            detail: 'GitLab serves the diff, file contents and AI-powered semantic code search. Because the agent searches the whole repository (not just the diff), it can confirm whether a compensation handler, fencing token or idempotency check exists elsewhere — the thing diff-only linters miss.' },
+        ],
+        current() { return this.nodes.find(n => n.id === this.sel) || this.nodes[0]; },
+      };
+    }
+
     function quorumDemo() {
       return {
         url: 'https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1',
         mode: 'dry_run',
         modes: [
-          { id: 'dry_run', label: 'Dry run', hint: '(no posting)' },
-          { id: 'post', label: 'Post', hint: '(comment on MR)' },
-          { id: 'fix', label: 'Fix', hint: '(draft fix MRs)' },
+          { id: 'dry_run', label: 'Dry run', hint: 'no posting',
+            desc: 'Analyse the MR and stream findings here only — nothing is written back to GitLab. Safe to run on any repo.' },
+          { id: 'post', label: 'Post', hint: 'comment on MR',
+            desc: 'Run the review and post the findings as a structured comment on the merge request (needs write access).' },
+          { id: 'fix', label: 'Fix', hint: 'draft fix MRs',
+            desc: 'Post findings AND open draft fix merge requests that patch the critical bugs — then re-review after they merge.' },
         ],
         running: false,
         started: false,
@@ -345,6 +419,7 @@
         trace: [],
         findings: [],
         verdict: null,
+        nextSteps: [],
         es: null,
 
         baseStages() {
@@ -389,6 +464,7 @@
           this.trace = [];
           this.findings = [];
           this.verdict = null;
+          this.nextSteps = [];
           if (this.es) { this.es.close(); }
 
           const qs = '?url=' + encodeURIComponent(this.url) + '&mode=' + this.mode;
@@ -401,6 +477,36 @@
         },
 
         finish() { this.running = false; if (this.es) { this.es.close(); this.es = null; } },
+
+        buildNextSteps(e) {
+          const steps = [];
+          const total = e.total || 0;
+          const fixMrs = this.findings.filter(f => f.url);
+          if (total === 0) {
+            steps.push({ icon: '✅', html: 'No coordination issues found — this change is safe to merge.' });
+            this.nextSteps = steps;
+            return;
+          }
+          steps.push({ icon: '🔎', html: `Quorum found <b>${total}</b> coordination issue${total>1?'s':''} across the services in this MR.` });
+
+          if (e.delivery === 'skipped') {
+            steps.push({ icon: '📝', html: 'This was a <b>dry run</b> — nothing was written to GitLab. Switch to <span class="font-mono text-brand-300">Post</span> to comment on the MR, or <span class="font-mono text-brand-300">Fix</span> to also open draft fix MRs.' });
+          } else if (e.delivery === 'posted') {
+            steps.push({ icon: '💬', html: 'Findings were posted as a structured review comment (with inline notes) on the merge request.' });
+          } else if (e.delivery === 'read_only') {
+            steps.push({ icon: '📄', html: 'The repo is read-only for Quorum, so findings were delivered as a filed issue / local SARIF report instead.' });
+          }
+
+          if (fixMrs.length) {
+            const links = fixMrs.map(f => `<a href="${f.url}" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">fix for ${f.rule_id}</a>`).join(', ');
+            steps.push({ icon: '🔧', html: `Quorum opened draft ${fixMrs.length>1?'fix MRs':'a fix MR'}: ${links}. Review and merge ${fixMrs.length>1?'them':'it'} — the webhook then re-reviews the branch automatically.` });
+          }
+
+          if (e.blocked) {
+            steps.push({ icon: '⛔', html: 'The MR is marked <b>blocked</b> because of a critical bug — its CI gate fails until the issue is resolved. Quorum doesn\'t stop here: it keeps the fix loop going.' });
+          }
+          this.nextSteps = steps;
+        },
 
         handle(e) {
           switch (e.event) {
@@ -454,7 +560,9 @@
               break;
             case 'done':
               this.stages.forEach(s => { if (s.state === 'pending') s.state = 'done'; });
-              this.log('info', '■', `done · ${e.delivery}`); this.finish(); break;
+              this.log('info', '■', `done · ${e.delivery}`);
+              this.buildNextSteps(e);
+              this.finish(); break;
             case 'busy':
               this.error = e.message; this.log('warn', '⚠', e.message); this.finish(); break;
             case 'error':
