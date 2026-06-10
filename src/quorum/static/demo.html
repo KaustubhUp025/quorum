@@ -103,34 +103,25 @@
         <input x-model="url" type="text" spellcheck="false"
                placeholder="https://gitlab.com/group/project/-/merge_requests/1"
                class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-base font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-        <button @click="run()" :disabled="running"
+        <button @click="run('dry_run')" :disabled="running"
                 class="px-7 py-3.5 rounded-xl bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-base transition whitespace-nowrap">
           <span x-show="!running">▶ Run review</span>
-          <span x-show="running" x-cloak>Reviewing…</span>
+          <span x-show="running" x-cloak x-text="runningLabel"></span>
         </button>
       </div>
 
-      <!-- Mode toggle (these DO drive the review: dry_run / post / fix → /demo/stream?mode=) -->
+      <!-- Guided flow: Run review always starts with a safe dry run. -->
       <div class="flex flex-wrap items-center gap-3 mt-5">
-        <span class="text-slate-400 text-base font-medium">Mode</span>
-        <div class="inline-flex rounded-xl bg-slate-900 border border-slate-700 p-1">
-          <template x-for="m in modes" :key="m.id">
-            <button @click="mode = m.id" type="button"
-                    class="px-4 py-2 rounded-lg text-sm font-semibold transition"
-                    :class="mode===m.id ? 'bg-brand-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'">
-              <span x-text="m.label"></span>
-              <span class="hidden sm:inline opacity-70 font-normal" x-text="' · '+m.hint"></span>
-            </button>
-          </template>
-        </div>
+        <span class="inline-flex items-center gap-2 text-sm px-3 py-1.5 rounded-full bg-brand-500/10 text-brand-300 border border-brand-500/30">
+          <span class="font-semibold">Step 1</span> · safe dry run
+        </span>
+        <span class="text-sm text-slate-400">Analyse only — nothing is written to GitLab. We'll guide you to <b class="text-slate-300">post</b> &amp; <b class="text-slate-300">open fixes</b> once findings are in.</span>
         <button @click="url='https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1'"
                 type="button"
                 class="ml-auto px-4 py-2 rounded-lg text-sm font-medium border border-brand-500/40 text-brand-300 hover:bg-brand-500/10 transition">
           ↳ Load the demo MR
         </button>
       </div>
-      <!-- live explanation of the selected mode -->
-      <p class="mt-3 text-sm text-slate-400" x-text="modes.find(m => m.id===mode).desc"></p>
       <p x-show="error" x-cloak class="mt-3 text-base text-red-400" x-text="error"></p>
     </div>
 
@@ -218,8 +209,8 @@
       </div>
     </div>
 
-    <!-- ── What happens next (post-review guidance) ──────────────── -->
-    <div x-show="nextSteps.length" x-cloak class="mt-6 max-w-4xl mx-auto glass border border-brand-500/30 rounded-2xl p-6 fade-in">
+    <!-- ── What happens next (guided post-review flow) ───────────── -->
+    <div x-show="nextSteps.length && !running" x-cloak class="mt-6 max-w-4xl mx-auto glass border border-brand-500/30 rounded-2xl p-6 fade-in">
       <h3 class="text-lg font-semibold text-white flex items-center gap-2">
         <span>🧭</span> What happens next
       </h3>
@@ -231,12 +222,25 @@
           </li>
         </template>
       </ul>
-      <p x-show="verdict && verdict.blocked" x-cloak class="mt-4 pt-4 border-t border-slate-800 text-base text-slate-300">
+
+      <!-- guided action buttons (post → fix sequence) -->
+      <div x-show="actions.length" x-cloak class="mt-5 flex flex-wrap gap-3">
+        <template x-for="(a, i) in actions" :key="i">
+          <button @click="run(a.mode)" :disabled="running" type="button"
+                  class="px-5 py-3 rounded-xl font-semibold text-base transition disabled:opacity-40"
+                  :class="a.style==='primary'
+                    ? 'bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-600/20'
+                    : 'border border-slate-600 text-slate-300 hover:bg-slate-800'">
+            <span x-text="a.label"></span>
+          </button>
+        </template>
+      </div>
+
+      <p x-show="verdict && verdict.blocked" x-cloak class="mt-5 pt-4 border-t border-slate-800 text-base text-slate-300">
         <span class="text-emerald-400 font-semibold">Does Quorum stop when an MR is blocked?</span>
-        No — "blocked" only marks the merge as unsafe. Quorum still posts every finding and, in
-        <span class="font-mono text-brand-300">Fix</span> mode, opens a draft fix MR for each critical bug.
-        Merge a fix MR and the Cloud Run webhook automatically re-reviews the branch — so it's a loop:
-        <span class="text-slate-400">detect → fix MR → re-review → unblock</span>.
+        No — "blocked" only marks the merge as unsafe. Quorum still posts every finding and opens a draft
+        fix MR for each critical bug. Merge a fix MR and the Cloud Run webhook automatically re-reviews the
+        branch — so it's a loop: <span class="text-slate-400">detect → fix MR → re-review → unblock</span>.
       </p>
     </div>
   </section>
@@ -403,15 +407,8 @@
     function quorumDemo() {
       return {
         url: 'https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1',
-        mode: 'dry_run',
-        modes: [
-          { id: 'dry_run', label: 'Dry run', hint: 'no posting',
-            desc: 'Analyse the MR and stream findings here only — nothing is written back to GitLab. Safe to run on any repo.' },
-          { id: 'post', label: 'Post', hint: 'comment on MR',
-            desc: 'Run the review and post the findings as a structured comment on the merge request (needs write access).' },
-          { id: 'fix', label: 'Fix', hint: 'draft fix MRs',
-            desc: 'Post findings AND open draft fix merge requests that patch the critical bugs — then re-review after they merge.' },
-        ],
+        currentMode: 'dry_run',
+        runningLabel: 'Reviewing…',
         running: false,
         started: false,
         error: '',
@@ -420,6 +417,7 @@
         findings: [],
         verdict: null,
         nextSteps: [],
+        actions: [],
         es: null,
 
         baseStages() {
@@ -447,8 +445,11 @@
                    MEDIUM: 'bg-yellow-500/20 text-yellow-200', LOW: 'bg-slate-700 text-slate-300' }[s] || 'bg-slate-700 text-slate-300';
         },
 
-        async run() {
+        async run(mode) {
           if (this.running) return;
+          this.currentMode = mode || 'dry_run';
+          this.runningLabel = this.currentMode === 'post' ? 'Posting…'
+                            : this.currentMode === 'fix' ? 'Opening fixes…' : 'Reviewing…';
           this.error = '';
           // Validate URL via the backend parser first.
           try {
@@ -465,9 +466,10 @@
           this.findings = [];
           this.verdict = null;
           this.nextSteps = [];
+          this.actions = [];
           if (this.es) { this.es.close(); }
 
-          const qs = '?url=' + encodeURIComponent(this.url) + '&mode=' + this.mode;
+          const qs = '?url=' + encodeURIComponent(this.url) + '&mode=' + this.currentMode;
           this.es = new EventSource('/demo/stream' + qs);
           this.es.onmessage = (ev) => this.handle(JSON.parse(ev.data));
           this.es.onerror = () => {
@@ -478,34 +480,48 @@
 
         finish() { this.running = false; if (this.es) { this.es.close(); this.es = null; } },
 
-        buildNextSteps(e) {
-          const steps = [];
+        buildGuide(e) {
+          this.nextSteps = [];
+          this.actions = [];
           const total = e.total || 0;
+          const crit = this.findings.filter(f => f.severity === 'CRITICAL');
+          const hasCritical = crit.length > 0;
           const fixMrs = this.findings.filter(f => f.url);
-          if (total === 0) {
-            steps.push({ icon: '✅', html: 'No coordination issues found — this change is safe to merge.' });
-            this.nextSteps = steps;
-            return;
-          }
-          steps.push({ icon: '🔎', html: `Quorum found <b>${total}</b> coordination issue${total>1?'s':''} across the services in this MR.` });
+          const mode = this.currentMode;
 
-          if (e.delivery === 'skipped') {
-            steps.push({ icon: '📝', html: 'This was a <b>dry run</b> — nothing was written to GitLab. Switch to <span class="font-mono text-brand-300">Post</span> to comment on the MR, or <span class="font-mono text-brand-300">Fix</span> to also open draft fix MRs.' });
-          } else if (e.delivery === 'posted') {
-            steps.push({ icon: '💬', html: 'Findings were posted as a structured review comment (with inline notes) on the merge request.' });
-          } else if (e.delivery === 'read_only') {
-            steps.push({ icon: '📄', html: 'The repo is read-only for Quorum, so findings were delivered as a filed issue / local SARIF report instead.' });
+          if (mode === 'dry_run') {
+            if (total === 0) {
+              // Everything passes — do NOT push toward post/fix.
+              this.nextSteps.push({ icon: '✅', html: 'No coordination issues found — this change is <b>safe to merge</b>. No need to post a review or open fixes.' });
+              this.actions.push({ label: 'Post the clean ✅ review anyway', mode: 'post', style: 'ghost' });
+            } else {
+              this.nextSteps.push({ icon: '🔎', html: `Found <b>${total}</b> issue${total>1?'s':''}${hasCritical?` — <b class="text-red-300">${crit.length} critical</b>`:''}. This was a safe dry run; nothing was written to GitLab.` });
+              this.nextSteps.push({ icon: '2️⃣', html: '<b>Step 2 —</b> post these findings to the merge request so the author sees them inline.' });
+              this.actions.push({ label: '📨 Post findings to the MR', mode: 'post', style: 'primary' });
+            }
+          } else if (mode === 'post') {
+            if (e.delivery === 'posted') {
+              this.nextSteps.push({ icon: '💬', html: 'Findings posted as a structured review comment (with inline notes) on the merge request.' });
+              if (hasCritical) {
+                this.nextSteps.push({ icon: '3️⃣', html: '<b>Step 3 —</b> you have write access and there are critical bugs, so Quorum can open draft fix MRs that patch them.' });
+                this.actions.push({ label: '🔧 Open draft fix MRs', mode: 'fix', style: 'primary' });
+              } else {
+                this.nextSteps.push({ icon: '✅', html: 'No critical bugs — no fix MRs needed.' });
+              }
+            } else if (e.delivery === 'read_only') {
+              this.nextSteps.push({ icon: '📄', html: 'This repo is <b>read-only</b> for Quorum, so findings were delivered as a filed issue / local report. Opening fix MRs needs write access — not available here.' });
+            } else {
+              this.nextSteps.push({ icon: '💬', html: `Review delivered (${e.delivery}).` });
+            }
+          } else if (mode === 'fix') {
+            if (fixMrs.length) {
+              const links = fixMrs.map(f => `<a href="${f.url}" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">fix for ${f.rule_id}</a>`).join(', ');
+              this.nextSteps.push({ icon: '🔧', html: `Opened draft ${fixMrs.length>1?'fix MRs':'a fix MR'}: ${links}.` });
+            } else {
+              this.nextSteps.push({ icon: '🔧', html: 'Draft fix MRs were requested for the critical findings.' });
+            }
+            this.nextSteps.push({ icon: '🔁', html: 'Merge a fix MR and the Cloud Run webhook <b>re-reviews the branch automatically</b> — detect → fix → re-review → unblock.' });
           }
-
-          if (fixMrs.length) {
-            const links = fixMrs.map(f => `<a href="${f.url}" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">fix for ${f.rule_id}</a>`).join(', ');
-            steps.push({ icon: '🔧', html: `Quorum opened draft ${fixMrs.length>1?'fix MRs':'a fix MR'}: ${links}. Review and merge ${fixMrs.length>1?'them':'it'} — the webhook then re-reviews the branch automatically.` });
-          }
-
-          if (e.blocked) {
-            steps.push({ icon: '⛔', html: 'The MR is marked <b>blocked</b> because of a critical bug — its CI gate fails until the issue is resolved. Quorum doesn\'t stop here: it keeps the fix loop going.' });
-          }
-          this.nextSteps = steps;
         },
 
         handle(e) {
@@ -561,7 +577,7 @@
             case 'done':
               this.stages.forEach(s => { if (s.state === 'pending') s.state = 'done'; });
               this.log('info', '■', `done · ${e.delivery}`);
-              this.buildNextSteps(e);
+              this.buildGuide(e);
               this.finish(); break;
             case 'busy':
               this.error = e.message; this.log('warn', '⚠', e.message); this.finish(); break;
