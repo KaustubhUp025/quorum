@@ -10,6 +10,8 @@
 
 Quorum reviews merge requests for coordination anti-patterns that static linters and generic AI reviewers can't catch — missing fencing tokens, incomplete saga compensations, retries without jitter, lost updates, transactional outbox violations, and more. It posts structured findings as comments, generates draft fix PRs for critical issues, and outputs SARIF for GitHub Code Scanning.
 
+Built on **Gemini 2.5 Pro** + **GitLab's MCP server** (its code-search superpower), deployed on **Google Cloud** — an interactive **Agent Engine Playground** that calls GitLab MCP tools live, plus a **Cloud Run** webhook and CLI. See [MCP integration](#mcp-integration--the-partner-superpower).
+
 > *"SonarQube doesn't have rules for saga compensation. Semgrep can't reason across service boundaries. CodeRabbit can't search the full repo. Quorum can."*
 
 ---
@@ -29,6 +31,9 @@ Quorum has found real coordination bugs in real open-source projects across GitH
 | `lhyou/fastapi-test` | Python | GitLab | `AIOKafkaConsumer` with `enable_auto_commit=True` — offset committed before processing | RULE_08 🔴 | [Issue #1](https://gitlab.com/lhyou/fastapi-test/-/work_items/1) |
 | `kamilmazurek/event-driven-architecture-template` | Java | GitLab | `@KafkaListener` on `ITEM_CREATED` topic with no `DeadLetterPublishingRecoverer` or error handler — poison-pill blocks partition. `itemStore.add()` in handler with no idempotency check on `event.getEventId()` — duplicate delivery corrupts store. | RULE_12 🔴 + RULE_13 🔴 | [Issue #1](https://gitlab.com/kamilmazurek/event-driven-architecture-template/-/work_items/1) |
 | `TeskaLabs/asab-iris` | Python | GitHub | "Retry Kafka consumer" PR: `delay = min(delay * 2, max_delay)` with no jitter — thundering herd on recovery. `AIOKafkaConsumer` catches all exceptions but has no DLQ — poison-pill messages are silently dropped. | RULE_06 🟠 + RULE_12 🟠 | [PR #122 review](https://github.com/TeskaLabs/asab-iris/pull/122#issuecomment-4643045308) |
+| `Antwanus/product-order-service` | Java | GitLab | Spring State Machine order service: `ProductOrderManagerImpl.newProductOrder` saves the order to the DB **and** sends a JMS `ValidateOrderRequest` inside one `@Transactional` — dual-write / ghost message if the commit fails after the send. Found via `get_file_contents` after semantic search 422'd (external repo, no embeddings). | RULE_09 🔴 | [Issue #23](https://gitlab.com/Antwanus/product-order-service/-/work_items/23) |
+
+> On repos where Quorum has no write access (the common case for third-party projects), it auto-detects read-only access and **delivers findings as a filed issue** (or a local SARIF/Markdown report) instead of failing — every external row above was delivered through that path.
 
 **9 independent open-source projects · 3 languages (Java, Go, Python) · 2 platforms · zero false positives across all runs.**
 
@@ -84,7 +89,7 @@ Quorum runs the **same three-stage pipeline** (SurfaceDetector → DeepReasoning
 3. Click the latest: **Quorum — ADK Coordination Reviewer**
 4. Select the **Playground** tab — a chat interface appears
 
-Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/6399129636109811712/playground?project=gen-lang-client-0294573094)
+Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/1659372503279075328/playground?project=gen-lang-client-0294573094)
 
 **Example — live review with real comment posting:**
 ```
@@ -109,9 +114,17 @@ Quorum: [calls list_rules — returns all 14 rules with descriptions and referen
 
 To explore without posting, add "dry run": `"review quorum-hackathon/quorum-demo MR 1 dry run"`
 
-The agent exposes three tools: `run_review`, `explain_rule`, `list_rules`. All run on Vertex AI Agent Engine with Gemini 2.5 Pro.
+**Live GitLab MCP in the Playground (the partner superpower).** Beyond the pipeline, the agent is wired to **GitLab's MCP server live** — so a judge can call GitLab MCP tools directly in the chat:
+```
+You:    "show me the changed files and diffs of MR 1 in quorum-hackathon/quorum-demo"
+Quorum: [calls the GitLab MCP tool get_merge_request_diffs over the network]
+        MR 1 changes 6 files: lock_manager.py, saga_orchestrator.py, order_service.py, ...
+```
+This works because the ADK agent holds a remote **`MCPToolset` (Streamable HTTP)** pointing at a Cloud Run **GitLab MCP gateway** (read-only). See [MCP integration](#mcp-integration--the-partner-superpower).
 
-**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/6399129636109811712`
+The agent exposes **four tools**: `run_review`, `explain_rule`, `list_rules`, **and the live GitLab MCP toolset** (`get_merge_request`, `get_merge_request_diffs`, `get_file_contents`, `search_repositories`, …). All run on Vertex AI Agent Engine with Gemini 2.5 Pro.
+
+**Engine:** `projects/803239892746/locations/us-central1/reasoningEngines/1659372503279075328`
 
 ---
 
@@ -341,22 +354,44 @@ conditional check to every write while the lock is held.
 
 ---
 
+## MCP integration — the partner superpower
+
+Quorum's differentiator is **GitLab's Model Context Protocol (MCP) server**, used in two complementary ways:
+
+**1. Inside the review pipeline.** When `glab` is on PATH, Stage 2's `semantic_code_search` / `get_merge_request_diffs` / `get_file_contents` calls are served by `glab mcp serve` — GitLab's official CLI MCP (191 tools), including **AI-semantic code search** across the whole repo (needs GitLab Duo/Ultimate). That cross-repo context is what lets Quorum *verify* a finding rather than guess from the diff. On Cloud Run this runs under `--execution-environment=gen2` (glab's Go TLS stack needs gen2's microVM kernel — it fails on the gen1 gVisor sandbox).
+
+**2. Live in the Agent Engine Playground (remote MCP).** GitLab's hosted MCP (`/api/v4/mcp`) is OAuth-DCR-only, so a headless agent can't use it with a PAT. Instead Quorum **self-hosts a GitLab MCP gateway on Cloud Run**, and the ADK agent connects to it with ADK's **`MCPToolset` over Streamable HTTP** — so the *interactive Playground* agent calls live GitLab MCP tools:
+
+```
+Agent Engine Playground  (Gemini 2.5 Pro + ADK)
+      │   ADK MCPToolset · Streamable HTTP · per-request PAT
+      ▼
+Cloud Run "quorum-mcp-gateway"   (GitLab MCP, read-only, 58 tools)
+      ▼
+   GitLab.com
+```
+
+**Gateway:** `https://quorum-mcp-gateway-3fnjzg6adq-uc.a.run.app/mcp` — image `zereight050/gitlab-mcp` (`STREAMABLE_HTTP=true`, `GITLAB_READ_ONLY_MODE=true`). This puts the partner-MCP integration in the **interactive** surface, not just the CLI.
+
+---
+
 ## Platform support
 
-Quorum works on both GitLab and GitHub.
+Quorum works on both GitLab and GitHub. **MCP is GitLab-specific** (the partner integration); **GitHub support is REST-only** — it proves Quorum's portability across platforms, but does not use MCP.
 
-### GitLab MCP client tiers
+### GitLab client tiers
 
-| Tier | Client | Tools | Semantic search | Requirements |
+| Tier | Client | Tools | Semantic search | Used by |
 |---|---|---|---|---|
-| **glab** (recommended) | `glab mcp serve` | 191 | ✅ AI-semantic (needs Duo/Ultimate) | `glab` v1.80+ on PATH |
-| **zereight** (community) | `@zereight/mcp-gitlab` | 107 | ❌ (REST lexical fallback) | Node.js + npx |
-| **rest** (fallback) | GitLab REST API | — | ❌ (lexical) | Nothing extra |
+| **glab** (recommended) | `glab mcp serve` (official) | 191 | ✅ AI-semantic (needs Duo/Ultimate) | CLI, Cloud Run webhook (gen2) |
+| **remote gateway** | `MCPToolset` → Cloud Run gateway | 58 | REST search | Agent Engine Playground |
+| **zereight** (community) | `@zereight/mcp-gitlab` | 107 | ❌ (REST lexical fallback) | gateway image / fallback |
+| **rest** (fallback) | GitLab REST API | — | ❌ (lexical) | dependency-free fallback |
 
 Auto-detection: `glab` on PATH → uses `glab`; otherwise → `rest`.  
 Override: `QUORUM_MCP_MODE=glab|zereight|rest`
 
-### GitHub support
+### GitHub support (REST-only)
 
 ```bash
 quorum review --platform github \
@@ -364,7 +399,7 @@ quorum review --platform github \
   --mr-iid 42
 ```
 
-Uses GitHub REST API (`QUORUM_GITHUB_TOKEN`). `project_id` is `owner/repo`, `mr-iid` is the PR number.
+Uses the GitHub REST API (`QUORUM_GITHUB_TOKEN`) via the single `GitHubRESTClient` — `project_id` is `owner/repo`, `mr-iid` is the PR number. The **full pipeline** runs on GitHub PRs: review, inline comments, draft fix PRs, CI verification, and issue filing (validated end-to-end on [`KaustubhUp025/quorum-github-demo` PR #1](https://github.com/KaustubhUp025/quorum-github-demo/pull/1)). There is no GitHub MCP client — GitHub goes straight to REST.
 
 ---
 
