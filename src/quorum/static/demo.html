@@ -445,7 +445,7 @@
         step1: 'idle', step2: 'locked', step3: 'locked',
         session: null, canWrite: false, hasFindings: false, hasCritical: false, delivered: null,
         stages: [], trace: [], findings: [], verdict: null,
-        nextSteps: [], action: null,
+        nextSteps: [], action: null, commentUrl: null,
         es: null,
 
         baseStages(phase) {
@@ -456,8 +456,10 @@
             { id: 'labels', n: 4, label: 'Apply MR labels',            detail: '', state: 'pending' },
           ];
           if (phase === 'fix') return [
-            { id: 'genfix', n: 1, label: 'Generate fixes (Gemini)', detail: '', state: 'pending' },
-            { id: 'openmr', n: 2, label: 'Open draft fix MRs',      detail: '', state: 'pending' },
+            { id: 'fetch',  n: 1, label: 'Read current file',        detail: '', state: 'pending' },
+            { id: 'genfix', n: 2, label: 'Generate fix (Gemini)',    detail: '', state: 'pending' },
+            { id: 'branch', n: 3, label: 'Commit fix to a branch',   detail: '', state: 'pending' },
+            { id: 'openmr', n: 4, label: 'Open draft fix MR',        detail: '', state: 'pending' },
           ];
           return [
             { id: 'fetch',    n: 1, label: 'Fetch diff & metadata', detail: '', state: 'pending' },
@@ -521,7 +523,7 @@
           this.runningLabel = 'Reviewing…';
           this.step1 = 'active'; this.step2 = 'locked'; this.step3 = 'locked';
           this.session = null; this.canWrite = false; this.hasFindings = false;
-          this.hasCritical = false; this.delivered = null; this.verdict = null;
+          this.hasCritical = false; this.delivered = null; this.verdict = null; this.commentUrl = null;
           this._openStream('/demo/stream?url=' + encodeURIComponent(this.url) + '&mode=dry_run', 'analyze', true);
         },
         runStep2() {
@@ -543,7 +545,7 @@
           this.session = null; this.canWrite = false; this.hasFindings = false;
           this.hasCritical = false; this.delivered = null;
           this.stages = []; this.trace = []; this.findings = []; this.verdict = null;
-          this.nextSteps = []; this.action = null; this.phase = 'analyze';
+          this.nextSteps = []; this.action = null; this.commentUrl = null; this.phase = 'analyze';
         },
 
         finish() { this.running = false; if (this.es) { this.es.close(); this.es = null; } },
@@ -572,6 +574,9 @@
             this.step2 = 'done'; this.delivered = e.delivery;
             if (e.delivery === 'posted') {
               this.nextSteps.push({ icon: '💬', html: 'Findings posted as a structured review comment (with inline notes) on the merge request.' });
+              if (this.commentUrl) {
+                this.nextSteps.push({ icon: '🔗', html: `<a href="${this.commentUrl}" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline font-medium">View the posted review on the MR →</a>` });
+              }
               if (this.hasCritical && this.canWrite) {
                 this.step3 = 'available';
                 this.nextSteps.push({ icon: '3️⃣', html: '<b>Step 3 —</b> open draft fix MRs that patch the critical bugs.' });
@@ -626,18 +631,45 @@
               this.log('warn', '⚑', `${e.rule_id} ${e.severity} · ${e.title}`); break;
 
             // ── post (Step 2) ──
-            case 'formatting_report': this.setStage('check', 'done'); this.setStage('format', 'active'); this.log('tool', '📝', 'formatting review report'); break;
-            case 'posting_comment': this.setStage('format', 'done'); this.setStage('post', 'active'); this.log('tool', '✎', 'posting comment + inline notes'); break;
-            case 'applying_labels': this.setStage('post', 'done'); this.setStage('labels', 'active'); this.log('tool', '🏷', 'applying MR labels'); break;
+            case 'formatting_report': this.setStage('check', 'done'); this.setStage('format', 'active'); this.log('tool', '📝', 'formatting review report (Markdown + inline bodies)'); break;
+            case 'inline_comment':
+              this.setStage('format', 'done'); this.setStage('post', 'active');
+              this.log('tool', '💬', `inline note → ${e.file_path}:${e.line} (${e.rule_id} ${e.severity})`); break;
+            case 'reviewer_lookup':
+              this.log('info', '👤', `looking up a reviewer for ${e.file_path} (git blame)`); break;
+            case 'posting_summary':
+              this.setStage('format', 'done'); this.setStage('post', 'active', `${e.inline_count} inline + summary`);
+              this.log('tool', '✎', `posting summary comment (${e.inline_count} inline note${e.inline_count===1?'':'s'})`); break;
+            case 'comment_posted':
+              this.commentUrl = e.url || null;
+              this.log('result', '✓', `review comment posted${e.url ? ' ✓' : ''}`); break;
+            case 'posting_comment': this.setStage('format', 'done'); this.setStage('post', 'active'); this.log('tool', '✎', 'posting review comment'); break;
+            case 'applying_labels': this.setStage('post', 'done'); this.setStage('labels', 'active'); this.log('tool', '🏷', 'applying MR label (quorum-review)'); break;
 
             // ── fix (Step 3) ──
-            case 'fixes_started': this.setStage('genfix', 'active'); this.log('info', '🔧', 'generating fixes'); break;
-            case 'fix_mr_started': this.setStage('genfix', 'active'); this.log('tool', '🔧', `building fix for ${e.rule_id}`); break;
+            case 'fixes_started': this.log('info', '🔧', 'opening draft fix MRs for the critical findings'); break;
+            case 'fix_mr_started': this.log('info', '▸', `fixing ${e.rule_id} · ${e.file_path}`); break;
+            case 'fix_fetch_file':
+              this.setStage('fetch', 'active'); this.log('tool', '📄', `read ${e.file_path} from the source branch`); break;
+            case 'fix_generating':
+              this.setStage('fetch', 'done'); this.setStage('genfix', 'active', e.model);
+              this.log('tool', '✦', `Gemini generating a corrected ${(e.file_bytes/1024).toFixed(1)} KB file for ${e.rule_id}`); break;
+            case 'fix_branch':
+              this.setStage('genfix', 'done'); this.setStage('branch', 'active', e.branch);
+              this.log('tool', '🌿', `create branch ${e.branch}`); break;
+            case 'fix_commit':
+              this.setStage('branch', 'active');
+              this.log('tool', '📝', `commit fixed ${e.file_path} (${(e.fixed_bytes/1024).toFixed(1)} KB)`); break;
+            case 'fix_open_mr':
+              this.setStage('branch', 'done'); this.setStage('openmr', 'active');
+              this.log('tool', '🔀', `open draft MR → ${e.target}`); break;
             case 'fix_mr_created':
-              this.setStage('genfix', 'done'); this.setStage('openmr', 'done');
+              this.setStage('openmr', 'done');
               { const f = this.findings.find(x => x.rule_id === e.rule_id && !x.url); if (f) f.url = e.url; }
-              this.log('result', '✓', `fix MR !${e.mr_iid} created`); break;
-            case 'fixes_done': this.setStage('genfix', 'done'); this.setStage('openmr', 'done'); break;
+              this.log('result', '✓', `draft fix MR !${e.mr_iid} created`); break;
+            case 'fixes_done':
+              this.stages.forEach(s => { if (s.state !== 'pending') s.state = 'done'; });
+              this.log('info', '■', `${e.fix_count} fix MR${e.fix_count===1?'':'s'} opened`); break;
 
             // ── shared ──
             case 'ci_correlation_started': this.log('info', '⚙', 'correlating with CI'); break;

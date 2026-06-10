@@ -46,14 +46,19 @@ class ReportFormatterAgent:
         project_id: str,
         mr_iid: int,
         mr_meta: dict,
-    ) -> None:
+        emit: Any = None,
+    ) -> str | None:
         """Post inline finding comments + one top-level summary.
 
         For each non-PASS finding that has a file_path and line_number, an inline
         discussion thread is posted on the exact diff line. A compact summary table
         is always posted as a top-level note so the full review is visible in one
         place even if inline comments fail or are unsupported.
+
+        `emit(stage, **data)` (optional) streams progress to the live demo. Returns
+        the URL of the posted summary comment (best-effort), or None.
         """
+        _emit = emit or (lambda *a, **k: None)
         diff_refs = {
             "base_sha": mr_meta.get("base_sha", ""),
             "head_sha": mr_meta.get("head_sha", ""),
@@ -80,10 +85,14 @@ class ReportFormatterAgent:
         for finding in non_pass:
             if finding.file_path and finding.line_number and has_diff_refs:
                 body = _inline_comment_body(finding)
+                _emit("inline_comment", rule_id=finding.rule_id,
+                      file_path=finding.file_path, line=finding.line_number,
+                      severity=finding.severity.value)
 
                 # C4 — Reviewer suggestion for CRITICAL findings
                 if finding.severity.value == "CRITICAL" and finding.file_path:
                     try:
+                        _emit("reviewer_lookup", rule_id=finding.rule_id, file_path=finding.file_path)
                         file_contribs = await client.get_file_contributors(
                             project_id, finding.file_path
                         )
@@ -133,8 +142,21 @@ class ReportFormatterAgent:
                 inline_posted.add(f"{finding.rule_id}:{finding.file_path}:{finding.line_number}")
 
         # Always post the summary comment
+        _emit("posting_summary", inline_count=len(inline_posted))
         summary = _format_summary_comment(result, inline_posted, sorted_findings, pass_findings)
-        await client.create_workitem_note(project_id, mr_iid, summary)
+        note_result = await client.create_workitem_note(project_id, mr_iid, summary)
+
+        # Best-effort: pull a clickable URL out of the note result (glab returns the
+        # note URL as text; REST returns JSON). Fall back to the MR's own web_url.
+        comment_url = None
+        if note_result:
+            m = re.search(r"https?://\S+", str(note_result))
+            if m:
+                comment_url = m.group(0).rstrip(".\"'")
+        if not comment_url:
+            comment_url = mr_meta.get("web_url") or None
+        _emit("comment_posted", url=comment_url, inline_count=len(inline_posted))
+        return comment_url
 
 
 def _inline_comment_body(f: Finding) -> str:

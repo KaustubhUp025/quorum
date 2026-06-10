@@ -885,6 +885,7 @@ class DeepReasoningAgent:
             self._emit("fix_mr_started", rule_id=finding.rule_id, file_path=finding.file_path)
             try:
                 # 1 — get the current file from the source branch
+                self._emit("fix_fetch_file", rule_id=finding.rule_id, file_path=finding.file_path)
                 file_content = await client.get_file_contents(
                     project_id, finding.file_path, ref=source_branch
                 )
@@ -893,6 +894,8 @@ class DeepReasoningAgent:
                     continue
 
                 # 2 — ask Gemini to generate the corrected file
+                self._emit("fix_generating", rule_id=finding.rule_id,
+                           file_bytes=len(file_content), model=self._settings.gemini_model)
                 fixed_content = await self._generate_fix(finding, file_content)
                 if not fixed_content:
                     continue
@@ -902,15 +905,19 @@ class DeepReasoningAgent:
                     f"quorum-fix/{finding.rule_id.lower().replace('_', '-')}"
                     f"-{int(time.time())}"
                 )
+                self._emit("fix_branch", rule_id=finding.rule_id, branch=branch_name)
                 await client.create_branch(project_id, branch_name, ref=source_branch)
 
                 # 4 — commit the corrected file
                 commit_msg = f"[Quorum] Fix {finding.rule_id}: {finding.title}"
+                self._emit("fix_commit", rule_id=finding.rule_id,
+                           file_path=finding.file_path, fixed_bytes=len(fixed_content))
                 await client.commit_file(
                     project_id, branch_name, finding.file_path, fixed_content, commit_msg
                 )
 
                 # 5 — open a DRAFT MR (prefix title with "Draft:" for GitLab draft status)
+                self._emit("fix_open_mr", rule_id=finding.rule_id, target=target_branch)
                 mr_title = f"Draft: [Quorum] Fix {finding.rule_id}: {finding.title}"
                 mr_desc = self._build_fix_mr_description(finding, fixed_content)
                 mr_result = await client.create_merge_request(
@@ -1334,12 +1341,12 @@ class DeepReasoningAgent:
             return result
 
         self._emit("formatting_report")
-        self._emit("posting_comment")
         try:
             report_formatter = ReportFormatterAgent()
-            await report_formatter.post_review(result, client, project_id, mr_iid, mr_meta)
+            await report_formatter.post_review(
+                result, client, project_id, mr_iid, mr_meta, emit=self._emit
+            )
             result.delivery = "posted"
-            self._emit("delivery", mode="posted")
         except Exception as exc:
             if _is_forbidden(exc):
                 log.warning("post_forbidden_falling_back", project_id=project_id)
@@ -1361,6 +1368,8 @@ class DeepReasoningAgent:
             except Exception as exc:
                 log.warning("label_application_failed", error=_scrub_secrets(str(exc))[:200])
 
+        # Emit delivery AFTER labels so the demo pipeline advances in order.
+        self._emit("delivery", mode="posted")
         self._emit(
             "review_complete",
             total=len(result.findings),
