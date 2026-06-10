@@ -213,3 +213,28 @@ class TestManagePipeline:
     async def test_returns_unsupported_message(self, client):
         result = await client.manage_pipeline("owner/repo", 123, "cancel")
         assert "not supported" in result.lower() or "github" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# get_project_permissions (read-only pre-flight parity with GitLab)
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectPermissions:
+    @pytest.mark.asyncio
+    async def test_push_means_can_write(self, client):
+        client._http.get.return_value = _mock_response({"permissions": {"admin": False, "push": True, "pull": True}})
+        p = await client.get_project_permissions("owner/repo")
+        assert p["can_write"] is True and p["access_level"] == 30
+
+    @pytest.mark.asyncio
+    async def test_pull_only_is_read_only(self, client):
+        client._http.get.return_value = _mock_response({"permissions": {"admin": False, "push": False, "pull": True}})
+        p = await client.get_project_permissions("owner/repo")
+        assert p["can_write"] is False and p["access_level"] == 0
+
+    @pytest.mark.asyncio
+    async def test_404_is_read_only(self, client):
+        client._http.get.return_value = _mock_response({}, status_code=404)
+        p = await client.get_project_permissions("owner/repo")
+        assert p["can_write"] is False
