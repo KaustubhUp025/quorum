@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from quorum.app import create_app, parse_mr_url
+from quorum.app import create_app, parse_mr_url, _unwrap_exc, _friendly_error
 from quorum.config import Settings
 
 
@@ -38,6 +38,36 @@ class TestParseMrUrl:
         assert parse_mr_url("https://example.com/foo") is None
         assert parse_mr_url("") is None
         assert parse_mr_url("not a url") is None
+
+
+class TestErrorUnwrapping:
+    def test_unwrap_retry_error(self):
+        from tenacity import RetryError, Future
+        cause = ValueError("429 RESOURCE_EXHAUSTED: quota")
+        fut = Future(attempt_number=3)
+        fut.set_exception(cause)
+        real = _unwrap_exc(RetryError(fut))
+        assert real is cause
+
+    def test_unwrap_exception_group(self):
+        cause = RuntimeError("boom")
+        try:
+            eg = ExceptionGroup("grp", [cause])  # type: ignore[name-defined]
+        except NameError:  # py < 3.11 fallback
+            return
+        assert _unwrap_exc(eg) is cause
+
+    def test_unwrap_plain(self):
+        e = KeyError("x")
+        assert _unwrap_exc(e) is e
+
+    def test_friendly_quota(self):
+        msg = _friendly_error(ValueError("429 RESOURCE_EXHAUSTED"))
+        assert "rate-limited" in msg
+
+    def test_friendly_generic(self):
+        msg = _friendly_error(ValueError("something odd"))
+        assert "something odd" in msg
 
 
 class TestDemoRoutes:

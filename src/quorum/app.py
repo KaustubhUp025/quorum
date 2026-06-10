@@ -213,6 +213,40 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
+def _unwrap_exc(exc: BaseException) -> BaseException:
+    """Dig through ExceptionGroup/TaskGroup and tenacity RetryError wrappers to
+    the first concrete cause, so error messages are actionable rather than e.g.
+    "RetryError[<Future at 0x… raised ClientError>]"."""
+    seen: set[int] = set()
+    real = exc
+    while id(real) not in seen:
+        seen.add(id(real))
+        subs = getattr(real, "exceptions", None)  # ExceptionGroup
+        if subs:
+            real = subs[0]
+            continue
+        last = getattr(real, "last_attempt", None)  # tenacity.RetryError
+        if last is not None:
+            inner = last.exception() if hasattr(last, "exception") else None
+            if inner is not None:
+                real = inner
+                continue
+        break
+    return real
+
+
+def _friendly_error(exc: BaseException) -> str:
+    """Map a raw API error to a short, user-facing message."""
+    name = type(exc).__name__
+    msg = str(exc)
+    low = msg.lower()
+    if "resource_exhausted" in low or "429" in low or "quota" in low or "rate limit" in low:
+        return "The model is rate-limited right now (quota exhausted). Please try again in a minute."
+    if "deadline" in low or "timeout" in low:
+        return "The review timed out. Please try again."
+    return f"{name}: {msg[:280]}"
+
+
 def _sse(event: dict) -> str:
     """Serialise one event as a Server-Sent Events frame."""
     return f"data: {json.dumps(event)}\n\n"
@@ -280,22 +314,20 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
             log.info("demo_stream_cancelled", project_id=project_id, iid=iid)
             raise
         except BaseException as exc:  # surface a clean error to the page
-            # TaskGroup / ExceptionGroup wrappers hide the real cause ("unhandled
-            # errors in a TaskGroup"). Unwrap to the first concrete sub-exception
-            # so the page shows something actionable.
+            # Unwrap the wrappers that hide the real cause so the page shows
+            # something actionable: ExceptionGroup/TaskGroup ("unhandled errors
+            # in a TaskGroup") and tenacity's RetryError ("RetryError[<Future …>]").
             import traceback as _tb
-            real = exc
-            while getattr(real, "exceptions", None):
-                real = real.exceptions[0]  # type: ignore[attr-defined]
+            real = _unwrap_exc(exc)
             log.error(
                 "demo_stream_failed",
                 project_id=project_id,
                 iid=iid,
-                error=str(real)[:200],
+                error=str(real)[:300],
                 error_type=type(real).__name__,
                 traceback=_tb.format_exc()[-1500:],
             )
-            emit("error", message=f"{type(real).__name__}: {str(real)[:280]}")
+            emit("error", message=_friendly_error(real))
         finally:
             queue.put_nowait(None)  # sentinel: stream complete
 
