@@ -94,29 +94,29 @@
   <section id="playground" class="max-w-7xl mx-auto px-5 py-16" x-data="quorumDemo()">
     <div class="text-center mb-10">
       <h2 class="text-4xl font-bold text-white">Live review playground</h2>
-      <p class="mt-4 text-lg text-slate-400">Paste a GitLab MR or GitHub PR URL and watch the agent investigate in real time.</p>
+      <p class="mt-4 text-lg text-slate-400">Paste a GitLab MR or GitHub PR URL and watch the agent work — step by step.</p>
     </div>
 
     <!-- Input bar -->
     <div class="glass border border-slate-800 rounded-2xl p-6 max-w-4xl mx-auto">
       <div class="flex flex-col md:flex-row gap-3">
-        <input x-model="url" type="text" spellcheck="false"
+        <input x-model="url" type="text" spellcheck="false" :disabled="running || step1==='done'"
                placeholder="https://gitlab.com/group/project/-/merge_requests/1"
-               class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-base font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-        <button @click="run('dry_run')" :disabled="running"
+               class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-base font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-60" />
+        <button x-show="step1!=='done'" @click="runStep1()" :disabled="running"
                 class="px-7 py-3.5 rounded-xl bg-brand-600 hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-base transition whitespace-nowrap">
           <span x-show="!running">▶ Run review</span>
           <span x-show="running" x-cloak x-text="runningLabel"></span>
         </button>
+        <button x-show="step1==='done'" x-cloak @click="startOver()" :disabled="running" type="button"
+                class="px-7 py-3.5 rounded-xl border border-slate-600 text-slate-300 hover:bg-slate-800 disabled:opacity-40 font-semibold text-base transition whitespace-nowrap">
+          ↺ Start over
+        </button>
       </div>
 
-      <!-- Guided flow: Run review always starts with a safe dry run. -->
       <div class="flex flex-wrap items-center gap-3 mt-5">
-        <span class="inline-flex items-center gap-2 text-sm px-3 py-1.5 rounded-full bg-brand-500/10 text-brand-300 border border-brand-500/30">
-          <span class="font-semibold">Step 1</span> · safe dry run
-        </span>
-        <span class="text-sm text-slate-400">Analyse only — nothing is written to GitLab. We'll guide you to <b class="text-slate-300">post</b> &amp; <b class="text-slate-300">open fixes</b> once findings are in.</span>
-        <button @click="url='https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1'"
+        <span class="text-sm text-slate-400">Step 1 is a <b class="text-slate-300">safe dry run</b> — analyse only, nothing is written to GitLab. We'll unlock <b class="text-slate-300">Post</b> &amp; <b class="text-slate-300">Fix</b> once findings are in.</span>
+        <button x-show="step1!=='done'" @click="url='https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1'"
                 type="button"
                 class="ml-auto px-4 py-2 rounded-lg text-sm font-medium border border-brand-500/40 text-brand-300 hover:bg-brand-500/10 transition">
           ↳ Load the demo MR
@@ -125,12 +125,46 @@
       <p x-show="error" x-cloak class="mt-3 text-base text-red-400" x-text="error"></p>
     </div>
 
+    <!-- Stepper -->
+    <div x-show="started" x-cloak class="max-w-4xl mx-auto mt-8 flex items-center gap-2">
+      <template x-for="(st, i) in stepper()" :key="i">
+        <div class="flex items-center flex-1">
+          <div class="flex items-center gap-3 px-4 py-3 rounded-xl border w-full transition"
+               :class="{
+                 'border-slate-800 bg-slate-900/40 opacity-60': st.state==='locked',
+                 'border-brand-500/50 bg-brand-500/5': st.state==='available',
+                 'border-brand-500 ring-2 ring-brand-500/30 bg-brand-500/10': st.state==='active',
+                 'border-emerald-500/50 bg-emerald-500/5': st.state==='done',
+               }">
+            <span class="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold"
+                  :class="{
+                    'bg-slate-700 text-slate-400': st.state==='locked',
+                    'bg-brand-500/30 text-brand-200': st.state==='available',
+                    'bg-brand-500 text-white pulsing': st.state==='active',
+                    'bg-emerald-500 text-white': st.state==='done',
+                  }">
+              <span x-show="st.state==='done'">✓</span>
+              <span x-show="st.state==='locked'">🔒</span>
+              <span x-show="st.state!=='done' && st.state!=='locked'" x-text="st.n"></span>
+            </span>
+            <div>
+              <div class="text-sm font-semibold" :class="st.state==='locked' ? 'text-slate-500' : 'text-slate-100'" x-text="st.label"></div>
+              <div class="text-xs text-slate-500" x-text="st.sub"></div>
+            </div>
+          </div>
+          <div x-show="i < 2" class="px-1 text-slate-600">→</div>
+        </div>
+      </template>
+    </div>
+
     <!-- 3-pane live view -->
-    <div class="grid lg:grid-cols-3 gap-4 mt-8" x-show="started" x-cloak>
+    <div class="grid lg:grid-cols-3 gap-4 mt-6" x-show="started" x-cloak>
 
       <!-- Pane 1: Pipeline -->
       <div class="glass border border-slate-800 rounded-2xl p-5">
-        <h3 class="text-base font-semibold text-slate-300 uppercase tracking-wide mb-4">Pipeline</h3>
+        <h3 class="text-base font-semibold text-slate-300 uppercase tracking-wide mb-4">
+          Pipeline <span class="text-brand-400 normal-case" x-text="'· ' + phaseLabel()"></span>
+        </h3>
         <ol class="space-y-3">
           <template x-for="s in stages" :key="s.id">
             <li class="flex items-start gap-3">
@@ -209,7 +243,7 @@
       </div>
     </div>
 
-    <!-- ── What happens next (guided post-review flow) ───────────── -->
+    <!-- ── What happens next (stateful step guidance) ────────────── -->
     <div x-show="nextSteps.length && !running" x-cloak class="mt-6 max-w-4xl mx-auto glass border border-brand-500/30 rounded-2xl p-6 fade-in">
       <h3 class="text-lg font-semibold text-white flex items-center gap-2">
         <span>🧭</span> What happens next
@@ -223,17 +257,13 @@
         </template>
       </ul>
 
-      <!-- guided action buttons (post → fix sequence) -->
-      <div x-show="actions.length" x-cloak class="mt-5 flex flex-wrap gap-3">
-        <template x-for="(a, i) in actions" :key="i">
-          <button @click="run(a.mode)" :disabled="running" type="button"
-                  class="px-5 py-3 rounded-xl font-semibold text-base transition disabled:opacity-40"
-                  :class="a.style==='primary'
-                    ? 'bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-600/20'
-                    : 'border border-slate-600 text-slate-300 hover:bg-slate-800'">
-            <span x-text="a.label"></span>
-          </button>
-        </template>
+      <!-- the single next-step action button (advance the flow) -->
+      <div x-show="action" x-cloak class="mt-5 flex flex-wrap gap-3 items-center">
+        <button @click="action.run()" :disabled="running" type="button"
+                class="px-5 py-3 rounded-xl font-semibold text-base transition disabled:opacity-40 bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-brand-600/20">
+          <span x-text="action ? action.label : ''"></span>
+        </button>
+        <span class="text-sm text-slate-500" x-text="action ? action.note : ''"></span>
       </div>
 
       <p x-show="verdict && verdict.blocked" x-cloak class="mt-5 pt-4 border-t border-slate-800 text-base text-slate-300">
@@ -407,35 +437,50 @@
     function quorumDemo() {
       return {
         url: 'https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1',
-        currentMode: 'dry_run',
-        runningLabel: 'Reviewing…',
         running: false,
         started: false,
         error: '',
-        stages: [],
-        trace: [],
-        findings: [],
-        verdict: null,
-        nextSteps: [],
-        actions: [],
+        runningLabel: 'Reviewing…',
+        phase: 'analyze',              // current running/displayed phase
+        step1: 'idle', step2: 'locked', step3: 'locked',
+        session: null, canWrite: false, hasFindings: false, hasCritical: false, delivered: null,
+        stages: [], trace: [], findings: [], verdict: null,
+        nextSteps: [], action: null,
         es: null,
 
-        baseStages() {
+        baseStages(phase) {
+          if (phase === 'post') return [
+            { id: 'check',  n: 1, label: 'Check write access',         detail: '', state: 'pending' },
+            { id: 'format', n: 2, label: 'Format review report',       detail: '', state: 'pending' },
+            { id: 'post',   n: 3, label: 'Post comment + inline notes', detail: '', state: 'pending' },
+            { id: 'labels', n: 4, label: 'Apply MR labels',            detail: '', state: 'pending' },
+          ];
+          if (phase === 'fix') return [
+            { id: 'genfix', n: 1, label: 'Generate fixes (Gemini)', detail: '', state: 'pending' },
+            { id: 'openmr', n: 2, label: 'Open draft fix MRs',      detail: '', state: 'pending' },
+          ];
           return [
-            { id: 'fetch', n: 1, label: 'Fetch diff & metadata', detail: '', state: 'pending' },
-            { id: 'surface', n: 2, label: 'Surface detection', detail: '', state: 'pending' },
-            { id: 'reason', n: 3, label: 'Gemini deep reasoning', detail: '', state: 'pending' },
-            { id: 'fix', n: 4, label: 'Draft fix MRs', detail: '', state: 'pending' },
-            { id: 'deliver', n: 5, label: 'Deliver report', detail: '', state: 'pending' },
+            { id: 'fetch',    n: 1, label: 'Fetch diff & metadata', detail: '', state: 'pending' },
+            { id: 'surface',  n: 2, label: 'Surface detection',     detail: '', state: 'pending' },
+            { id: 'reason',   n: 3, label: 'Gemini deep reasoning', detail: '', state: 'pending' },
+            { id: 'findings', n: 4, label: 'Findings ready',        detail: '', state: 'pending' },
           ];
         },
+        phaseLabel() { return { analyze: 'dry run', post: 'posting review', fix: 'opening fix MRs' }[this.phase] || ''; },
+        stepper() {
+          return [
+            { n: 1, label: 'Dry run',     sub: 'analyse only',      state: this.step1 },
+            { n: 2, label: 'Post review', sub: 'comment on the MR', state: this.step2 },
+            { n: 3, label: 'Fix MR',      sub: 'draft patches',     state: this.step3 },
+          ];
+        },
+
         setStage(id, state, detail) {
           const s = this.stages.find(x => x.id === id);
           if (s) { s.state = state; if (detail !== undefined) s.detail = detail; }
         },
         log(kind, icon, text) { this.trace.push({ kind, icon, text }); this.$nextTick(() => this.scrollTrace()); },
         scrollTrace() { const el = document.querySelector('.trace'); if (el) el.scrollTop = el.scrollHeight; },
-
         sevBorder(s) {
           return { CRITICAL: 'border-red-500/50', HIGH: 'border-amber-500/50',
                    MEDIUM: 'border-yellow-500/40', LOW: 'border-slate-700' }[s] || 'border-slate-700';
@@ -445,127 +490,161 @@
                    MEDIUM: 'bg-yellow-500/20 text-yellow-200', LOW: 'bg-slate-700 text-slate-300' }[s] || 'bg-slate-700 text-slate-300';
         },
 
-        async run(mode) {
-          if (this.running) return;
-          this.currentMode = mode || 'dry_run';
-          this.runningLabel = this.currentMode === 'post' ? 'Posting…'
-                            : this.currentMode === 'fix' ? 'Opening fixes…' : 'Reviewing…';
-          this.error = '';
-          // Validate URL via the backend parser first.
+        async validateUrl() {
           try {
             const r = await fetch('/demo/parse-url?url=' + encodeURIComponent(this.url));
             const j = await r.json();
-            if (!j.ok) { this.error = j.error || 'Invalid URL'; return; }
-          } catch (e) { this.error = 'Could not reach the server.'; return; }
+            if (!j.ok) { this.error = j.error || 'Invalid URL'; return false; }
+            return true;
+          } catch (e) { this.error = 'Could not reach the server.'; return false; }
+        },
 
-          // Reset state
+        _openStream(endpoint, phase, resetFindings) {
+          this.error = '';
           this.running = true;
           this.started = true;
-          this.stages = this.baseStages();
+          this.phase = phase;
+          this.stages = this.baseStages(phase);
           this.trace = [];
-          this.findings = [];
-          this.verdict = null;
           this.nextSteps = [];
-          this.actions = [];
+          this.action = null;
+          if (resetFindings) this.findings = [];
           if (this.es) { this.es.close(); }
-
-          const qs = '?url=' + encodeURIComponent(this.url) + '&mode=' + this.currentMode;
-          this.es = new EventSource('/demo/stream' + qs);
+          this.es = new EventSource(endpoint);
           this.es.onmessage = (ev) => this.handle(JSON.parse(ev.data));
-          this.es.onerror = () => {
-            if (this.running) { this.log('warn', '⚠', 'stream closed'); }
-            this.finish();
-          };
+          this.es.onerror = () => { if (this.running) this.log('warn', '⚠', 'stream closed'); this.finish(); };
+        },
+
+        async runStep1() {
+          if (this.running) return;
+          if (!(await this.validateUrl())) return;
+          this.runningLabel = 'Reviewing…';
+          this.step1 = 'active'; this.step2 = 'locked'; this.step3 = 'locked';
+          this.session = null; this.canWrite = false; this.hasFindings = false;
+          this.hasCritical = false; this.delivered = null; this.verdict = null;
+          this._openStream('/demo/stream?url=' + encodeURIComponent(this.url) + '&mode=dry_run', 'analyze', true);
+        },
+        runStep2() {
+          if (this.running || !this.session) return;
+          this.runningLabel = 'Posting…';
+          this.step2 = 'active';
+          this._openStream('/demo/post-stream?session=' + encodeURIComponent(this.session), 'post', false);
+        },
+        runStep3() {
+          if (this.running || !this.session) return;
+          this.runningLabel = 'Opening fixes…';
+          this.step3 = 'active';
+          this._openStream('/demo/fix-stream?session=' + encodeURIComponent(this.session), 'fix', false);
+        },
+        startOver() {
+          if (this.es) { this.es.close(); this.es = null; }
+          this.running = false; this.started = false; this.error = '';
+          this.step1 = 'idle'; this.step2 = 'locked'; this.step3 = 'locked';
+          this.session = null; this.canWrite = false; this.hasFindings = false;
+          this.hasCritical = false; this.delivered = null;
+          this.stages = []; this.trace = []; this.findings = []; this.verdict = null;
+          this.nextSteps = []; this.action = null; this.phase = 'analyze';
         },
 
         finish() { this.running = false; if (this.es) { this.es.close(); this.es = null; } },
 
-        buildGuide(e) {
-          this.nextSteps = [];
-          this.actions = [];
-          const total = e.total || 0;
+        buildGuide(phase, e) {
+          this.nextSteps = []; this.action = null;
           const crit = this.findings.filter(f => f.severity === 'CRITICAL');
-          const hasCritical = crit.length > 0;
           const fixMrs = this.findings.filter(f => f.url);
-          const mode = this.currentMode;
 
-          if (mode === 'dry_run') {
-            if (total === 0) {
-              // Everything passes — do NOT push toward post/fix.
-              this.nextSteps.push({ icon: '✅', html: 'No coordination issues found — this change is <b>safe to merge</b>. No need to post a review or open fixes.' });
-              this.actions.push({ label: 'Post the clean ✅ review anyway', mode: 'post', style: 'ghost' });
-            } else {
-              this.nextSteps.push({ icon: '🔎', html: `Found <b>${total}</b> issue${total>1?'s':''}${hasCritical?` — <b class="text-red-300">${crit.length} critical</b>`:''}. This was a safe dry run; nothing was written to GitLab.` });
-              this.nextSteps.push({ icon: '2️⃣', html: '<b>Step 2 —</b> post these findings to the merge request so the author sees them inline.' });
-              this.actions.push({ label: '📨 Post findings to the MR', mode: 'post', style: 'primary' });
+          if (phase === 'analyze') {
+            this.step1 = 'done';
+            if (!this.hasFindings) {
+              this.nextSteps.push({ icon: '✅', html: 'No coordination issues found — this change is <b>safe to merge</b>. Nothing to post or fix.' });
+              if (this.canWrite) this.action = { label: 'Post the clean ✅ review', note: '(optional)', run: () => this.runStep2() };
+              return;
             }
-          } else if (mode === 'post') {
+            this.nextSteps.push({ icon: '🔎', html: `Found <b>${e.total}</b> issue${e.total>1?'s':''}${this.hasCritical?` — <b class="text-red-300">${crit.length} critical</b>`:''}. This was a safe dry run; nothing was written to GitLab.` });
+            if (this.canWrite) {
+              this.step2 = 'available';
+              this.nextSteps.push({ icon: '2️⃣', html: '<b>Step 2 —</b> post these findings to the MR so the author sees them inline.' });
+              this.action = { label: '📨 Post review to the MR', note: '· you have write access', run: () => this.runStep2() };
+            } else {
+              this.nextSteps.push({ icon: '🔒', html: "<b>Read-only repo</b> — Quorum can't post here. On a real run it files an issue / writes a SARIF report instead. Post &amp; Fix stay locked." });
+            }
+          } else if (phase === 'post') {
+            this.step2 = 'done'; this.delivered = e.delivery;
             if (e.delivery === 'posted') {
               this.nextSteps.push({ icon: '💬', html: 'Findings posted as a structured review comment (with inline notes) on the merge request.' });
-              if (hasCritical) {
-                this.nextSteps.push({ icon: '3️⃣', html: '<b>Step 3 —</b> you have write access and there are critical bugs, so Quorum can open draft fix MRs that patch them.' });
-                this.actions.push({ label: '🔧 Open draft fix MRs', mode: 'fix', style: 'primary' });
+              if (this.hasCritical && this.canWrite) {
+                this.step3 = 'available';
+                this.nextSteps.push({ icon: '3️⃣', html: '<b>Step 3 —</b> open draft fix MRs that patch the critical bugs.' });
+                this.action = { label: '🔧 Push fix MRs', note: '· opens draft MRs', run: () => this.runStep3() };
               } else {
-                this.nextSteps.push({ icon: '✅', html: 'No critical bugs — no fix MRs needed.' });
+                this.nextSteps.push({ icon: '✅', html: 'No critical bugs to auto-fix — you are done.' });
               }
             } else if (e.delivery === 'read_only') {
-              this.nextSteps.push({ icon: '📄', html: 'This repo is <b>read-only</b> for Quorum, so findings were delivered as a filed issue / local report. Opening fix MRs needs write access — not available here.' });
+              this.nextSteps.push({ icon: '🔒', html: 'Repo turned out to be <b>read-only</b> — findings delivered as a filed issue / local report. Fix MRs need write access.' });
             } else {
               this.nextSteps.push({ icon: '💬', html: `Review delivered (${e.delivery}).` });
             }
-          } else if (mode === 'fix') {
+          } else if (phase === 'fix') {
+            this.step3 = 'done';
             if (fixMrs.length) {
               const links = fixMrs.map(f => `<a href="${f.url}" target="_blank" rel="noopener" class="text-brand-400 hover:text-brand-300 underline">fix for ${f.rule_id}</a>`).join(', ');
               this.nextSteps.push({ icon: '🔧', html: `Opened draft ${fixMrs.length>1?'fix MRs':'a fix MR'}: ${links}.` });
             } else {
               this.nextSteps.push({ icon: '🔧', html: 'Draft fix MRs were requested for the critical findings.' });
             }
-            this.nextSteps.push({ icon: '🔁', html: 'Merge a fix MR and the Cloud Run webhook <b>re-reviews the branch automatically</b> — detect → fix → re-review → unblock.' });
+            this.nextSteps.push({ icon: '🔁', html: 'Merge a fix MR and the Cloud Run webhook <b>re-reviews automatically</b> — detect → fix → re-review → unblock.' });
           }
         },
 
         handle(e) {
           switch (e.event) {
             case 'connected':
-              this.log('info', '◆', `connected · ${e.platform} · ${e.project_id} #${e.iid} · ${e.mode}`); break;
-            case 'review_started':
-              this.log('info', '▸', 'review started'); break;
-            case 'fetching_diff':
-              this.setStage('fetch', 'active'); this.log('tool', '↓', 'fetching merge-request diff'); break;
+              this.log('info', '◆', `connected · ${e.phase || 'analyze'}${e.project_id ? ` · ${e.project_id} #${e.iid}` : ''}`); break;
+            case 'session':
+              this.session = e.session_id; this.canWrite = !!e.can_write;
+              this.hasFindings = !!e.has_findings; this.hasCritical = !!e.has_critical;
+              this.log('info', '🔑', `session ready · ${e.can_write ? 'write access ✓' : 'read-only'}`); break;
+
+            // ── analyze (Step 1) ──
+            case 'review_started': this.log('info', '▸', 'review started'); break;
+            case 'fetching_diff': this.setStage('fetch', 'active'); this.log('tool', '↓', 'fetching merge-request diff'); break;
             case 'diff_fetched':
               this.setStage('fetch', 'done', `${(e.diff_bytes/1024).toFixed(1)} KB · ${e.source_branch} → ${e.target_branch}`);
               this.log('result', '✓', `diff: ${e.title || ''} (${e.diff_bytes} bytes)`); break;
-            case 'surface_detection_started':
-              this.setStage('surface', 'active'); break;
+            case 'surface_detection_started': this.setStage('surface', 'active'); break;
             case 'surfaces_detected':
               this.setStage('surface', 'done', `${e.count} surface(s)`);
               this.log('info', '◎', `surfaces: ${(e.rules||[]).map(r=>r.id).join(', ') || 'none'}`); break;
-            case 'no_surfaces':
-              this.log('info', '○', 'no coordination surfaces in this diff'); break;
-            case 'reasoning_started':
-              this.setStage('reason', 'active', e.model); this.log('info', '✦', `reasoning with ${e.model}`); break;
-            case 'tool_round':
-              this.log('info', '↻', `round ${e.round}: ${(e.calls||[]).join(', ')}`); break;
-            case 'tool_call':
-              this.log('tool', '⛏', `${e.tool}(${Object.values(e.args||{}).join(', ').slice(0,60)})`); break;
-            case 'tool_result':
-              this.log('result', '✓', `${e.tool} → ${e.result_bytes} bytes`); break;
+            case 'no_surfaces': this.log('info', '○', 'no coordination surfaces in this diff'); break;
+            case 'reasoning_started': this.setStage('reason', 'active', e.model); this.log('info', '✦', `reasoning with ${e.model}`); break;
+            case 'tool_round': this.log('info', '↻', `round ${e.round}: ${(e.calls||[]).join(', ')}`); break;
+            case 'tool_call': this.log('tool', '⛏', `${e.tool}(${Object.values(e.args||{}).join(', ').slice(0,60)})`); break;
+            case 'tool_result': this.log('result', '✓', `${e.tool} → ${e.result_bytes} bytes`); break;
             case 'finding':
               this.findings.push({ rule_id: e.rule_id, title: e.title, severity: e.severity,
                                    confidence: e.confidence, file_path: e.file_path, line: e.line, url: null });
               this.log('warn', '⚑', `${e.rule_id} ${e.severity} · ${e.title}`); break;
-            case 'fix_mr_started':
-              this.setStage('fix', 'active'); this.log('tool', '🔧', `building fix for ${e.rule_id}`); break;
+
+            // ── post (Step 2) ──
+            case 'formatting_report': this.setStage('check', 'done'); this.setStage('format', 'active'); this.log('tool', '📝', 'formatting review report'); break;
+            case 'posting_comment': this.setStage('format', 'done'); this.setStage('post', 'active'); this.log('tool', '✎', 'posting comment + inline notes'); break;
+            case 'applying_labels': this.setStage('post', 'done'); this.setStage('labels', 'active'); this.log('tool', '🏷', 'applying MR labels'); break;
+
+            // ── fix (Step 3) ──
+            case 'fixes_started': this.setStage('genfix', 'active'); this.log('info', '🔧', 'generating fixes'); break;
+            case 'fix_mr_started': this.setStage('genfix', 'active'); this.log('tool', '🔧', `building fix for ${e.rule_id}`); break;
             case 'fix_mr_created':
-              this.setStage('fix', 'done');
+              this.setStage('genfix', 'done'); this.setStage('openmr', 'done');
               { const f = this.findings.find(x => x.rule_id === e.rule_id && !x.url); if (f) f.url = e.url; }
               this.log('result', '✓', `fix MR !${e.mr_iid} created`); break;
-            case 'ci_correlation_started':
-              this.log('info', '⚙', 'correlating with CI'); break;
-            case 'posting_comment':
-              this.setStage('deliver', 'active'); this.log('tool', '✎', 'posting review comment'); break;
+            case 'fixes_done': this.setStage('genfix', 'done'); this.setStage('openmr', 'done'); break;
+
+            // ── shared ──
+            case 'ci_correlation_started': this.log('info', '⚙', 'correlating with CI'); break;
             case 'delivery':
-              this.setStage('deliver', 'done', e.mode);
+              if (this.phase === 'post') {
+                this.setStage('check', 'done'); this.setStage('post', 'done'); this.setStage('labels', 'done');
+              }
               this.log('result', '✓', `delivery: ${e.mode}`); break;
             case 'review_complete':
               this.verdict = {
@@ -573,16 +652,15 @@
                 text: e.blocked ? '⛔ Merge blocked — critical coordination bug' : (e.total ? '⚠ Issues found' : '✅ No issues'),
                 detail: `${e.total} finding(s) · ${e.critical} critical · ${e.high} high · ${e.medium} medium`,
               };
+              if (this.phase === 'analyze') { this.setStage('reason', 'done'); this.setStage('findings', 'done', `${e.total} finding(s)`); }
               break;
             case 'done':
               this.stages.forEach(s => { if (s.state === 'pending') s.state = 'done'; });
-              this.log('info', '■', `done · ${e.delivery}`);
-              this.buildGuide(e);
+              this.log('info', '■', `done · ${e.phase || this.phase}`);
+              this.buildGuide(e.phase || this.phase, e);
               this.finish(); break;
-            case 'busy':
-              this.error = e.message; this.log('warn', '⚠', e.message); this.finish(); break;
-            case 'error':
-              this.error = e.message; this.log('error', '✗', e.message); this.finish(); break;
+            case 'busy': this.error = e.message; this.log('warn', '⚠', e.message); this.finish(); break;
+            case 'error': this.error = e.message; this.log('error', '✗', e.message); this.finish(); break;
           }
         },
       };

@@ -113,3 +113,30 @@ class TestDemoRoutes:
             params={"url": "https://gitlab.com/a/b/-/merge_requests/1", "mode": "delete"},
         )
         assert resp.status_code == 422  # pattern validation fails
+
+    def test_post_stream_requires_session(self):
+        # Missing session param → 422; unknown session → 404
+        c = _client()
+        assert c.get("/demo/post-stream").status_code == 422
+        assert c.get("/demo/post-stream", params={"session": "nope"}).status_code == 404
+
+    def test_fix_stream_requires_session(self):
+        c = _client()
+        assert c.get("/demo/fix-stream").status_code == 422
+        assert c.get("/demo/fix-stream", params={"session": "nope"}).status_code == 404
+
+
+class TestSessionStore:
+    def test_store_get_roundtrip(self):
+        from quorum.app import _store_session, _get_session
+        sid = _store_session({"project_id": "g/p", "mr_iid": 1})
+        s = _get_session(sid)
+        assert s and s["project_id"] == "g/p"
+        assert _get_session("missing") is None
+
+    def test_session_ttl_expiry(self):
+        import quorum.app as appmod
+        sid = appmod._store_session({"project_id": "g/p", "mr_iid": 1})
+        # Force the stored timestamp into the past beyond the TTL.
+        appmod._demo_sessions[sid]["created"] -= appmod._SESSION_TTL_SECONDS + 10
+        assert appmod._get_session(sid) is None

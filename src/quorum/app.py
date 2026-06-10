@@ -10,6 +10,8 @@ import asyncio
 import hmac
 import json
 import re
+import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -41,6 +43,43 @@ _active_demo_reviews = 0
 # Heartbeat interval for the SSE demo stream — keeps the connection alive through
 # long idle gaps (e.g. Gemini thinking before its first tool call).
 _SSE_KEEPALIVE_SECONDS = 10
+
+# In-memory store for the stateful 3-step demo (Dry run → Post → Fix). Step 1
+# stores the analysed ReviewResult under a uuid; Steps 2/3 act on it without
+# re-analysing. Per-instance only — fine for the single warm demo instance
+# (min-instances=1); a lost session just means re-running the dry run. Bounded
+# by TTL + size so it can't grow without limit.
+_demo_sessions: dict[str, dict] = {}
+_SESSION_TTL_SECONDS = 1800
+_SESSION_MAX = 50
+
+
+def _gc_sessions() -> None:
+    now = time.time()
+    for k in [k for k, v in _demo_sessions.items() if now - v["created"] > _SESSION_TTL_SECONDS]:
+        _demo_sessions.pop(k, None)
+    if len(_demo_sessions) > _SESSION_MAX:
+        oldest = sorted(_demo_sessions, key=lambda k: _demo_sessions[k]["created"])
+        for k in oldest[: len(_demo_sessions) - _SESSION_MAX]:
+            _demo_sessions.pop(k, None)
+
+
+def _store_session(data: dict) -> str:
+    _gc_sessions()
+    sid = uuid.uuid4().hex
+    data["created"] = time.time()
+    _demo_sessions[sid] = data
+    return sid
+
+
+def _get_session(sid: str) -> dict | None:
+    s = _demo_sessions.get(sid)
+    if not s:
+        return None
+    if time.time() - s["created"] > _SESSION_TTL_SECONDS:
+        _demo_sessions.pop(sid, None)
+        return None
+    return s
 
 
 def parse_mr_url(url: str) -> dict | None:
@@ -132,23 +171,49 @@ def create_app(settings: Settings) -> FastAPI:
             )
         return JSONResponse({"ok": True, **parsed})
 
+    _SSE_HEADERS = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",  # disable proxy buffering for live SSE
+    }
+
     @app.get("/demo/stream")
     async def demo_stream(
         url: str = Query(...),
+        # mode kept for backward-compat; the stateful flow always analyses here
+        # (Step 1) and posts/fixes via the dedicated endpoints below.
         mode: str = Query("dry_run", pattern="^(dry_run|post|fix)$"),
     ) -> StreamingResponse:
         parsed = parse_mr_url(url)
         if not parsed:
             raise HTTPException(status_code=400, detail="Invalid MR/PR URL")
-
+        connected = {"platform": parsed["platform"], "project_id": parsed["project_id"],
+                     "iid": parsed["iid"], "phase": "analyze"}
         return StreamingResponse(
-            _demo_event_stream(parsed, mode, settings),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # disable proxy buffering for live SSE
-            },
+            _sse_stream(connected, _dry_run_worker(parsed, settings)),
+            media_type="text/event-stream", headers=_SSE_HEADERS,
+        )
+
+    @app.get("/demo/post-stream")
+    async def demo_post_stream(session: str = Query(...)) -> StreamingResponse:
+        sess = _get_session(session)
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session expired — re-run the dry run.")
+        connected = {"phase": "post", "project_id": sess["project_id"], "iid": sess["mr_iid"]}
+        return StreamingResponse(
+            _sse_stream(connected, _post_worker(sess, settings)),
+            media_type="text/event-stream", headers=_SSE_HEADERS,
+        )
+
+    @app.get("/demo/fix-stream")
+    async def demo_fix_stream(session: str = Query(...)) -> StreamingResponse:
+        sess = _get_session(session)
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session expired — re-run the dry run.")
+        connected = {"phase": "fix", "project_id": sess["project_id"], "iid": sess["mr_iid"]}
+        return StreamingResponse(
+            _sse_stream(connected, _fix_worker(sess, settings)),
+            media_type="text/event-stream", headers=_SSE_HEADERS,
         )
 
     @app.post("/webhook/gitlab")
@@ -254,17 +319,15 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
-    """Run a live review and yield pipeline events as SSE frames.
+async def _sse_stream(connected: dict, worker):
+    """Generic SSE driver for the demo: emit `connected`, run `worker(emit)` as a
+    background task, drain its event queue with keepalives, and surface a clean
+    error. `worker` is an async callable taking the `emit(stage, **data)` fn.
 
-    The QuorumAgent's `_emit` hook pushes events onto an in-process queue while
-    the review runs as a background task; we drain the queue to the client.
+    Shared by all three demo steps (analyze / post / fix) so keepalive, error
+    unwrapping and the concurrency guard live in one place.
     """
     global _active_demo_reviews
-
-    platform = parsed["platform"]
-    project_id = parsed["project_id"]
-    iid = parsed["iid"]
 
     # Concurrency guard (atomic in the single-threaded loop — no await here).
     if _active_demo_reviews >= _MAX_CONCURRENT_DEMO_REVIEWS:
@@ -278,58 +341,19 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
     def emit(stage: str, **data) -> None:
         queue.put_nowait({"event": stage, **data})
 
-    async def run() -> None:
-        from quorum.agent import QuorumAgent
-        from quorum.github_client import make_github_client
-        from quorum.gitlab_client import make_client as _make_client
-
+    async def runner() -> None:
         try:
-            # 'fix' mode opts into draft fix-MR creation; clone settings so the
-            # per-request override never leaks into the shared webhook config.
-            run_settings = settings
-            if mode == "fix":
-                run_settings = settings.model_copy(update={"create_fix_mrs": True})
-
-            agent = QuorumAgent(run_settings)
-            agent._emit = emit
-
-            if platform == "github":
-                client = make_github_client(run_settings)
-            else:
-                client = _make_client(run_settings, project_id=project_id)
-
-            async with client.connect():
-                result = await agent.review(
-                    project_id=project_id,
-                    mr_iid=iid,
-                    client=client,
-                    post_comment=(mode != "dry_run"),
-                    # The demo must always run a real review. Without force, the
-                    # "already reviewed" duplicate guard short-circuits post/fix
-                    # runs on a previously-reviewed MR and returns 0 findings.
-                    force=True,
-                )
-            emit(
-                "done",
-                delivery=result.delivery,
-                blocked=result.blocked,
-                total=len(result.findings),
-            )
+            await worker(emit)
         except asyncio.CancelledError:
-            # The client disconnected (browser closed / navigated away) and the
-            # streaming generator cancelled us. Not an error — exit quietly.
-            log.info("demo_stream_cancelled", project_id=project_id, iid=iid)
+            log.info("demo_stream_cancelled")
             raise
         except BaseException as exc:  # surface a clean error to the page
-            # Unwrap the wrappers that hide the real cause so the page shows
-            # something actionable: ExceptionGroup/TaskGroup ("unhandled errors
-            # in a TaskGroup") and tenacity's RetryError ("RetryError[<Future …>]").
+            # Unwrap the wrappers that hide the real cause: ExceptionGroup/TaskGroup
+            # and tenacity's RetryError ("RetryError[<Future …>]").
             import traceback as _tb
             real = _unwrap_exc(exc)
             log.error(
                 "demo_stream_failed",
-                project_id=project_id,
-                iid=iid,
                 error=str(real)[:300],
                 error_type=type(real).__name__,
                 traceback=_tb.format_exc()[-1500:],
@@ -338,17 +362,13 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
         finally:
             queue.put_nowait(None)  # sentinel: stream complete
 
-    task = asyncio.create_task(run())
+    task = asyncio.create_task(runner())
     try:
-        # Announce immediately so the page knows the stream is live.
-        yield _sse({"event": "connected", "platform": platform,
-                    "project_id": project_id, "iid": iid, "mode": mode})
+        yield _sse({"event": "connected", **connected})
         while True:
-            # Gemini can "think" for 60-90s between events (e.g. before its first
-            # tool call), leaving the SSE connection idle. Cloud Run / proxies /
-            # the browser drop an idle connection, so emit an SSE keepalive comment
-            # every few seconds when no real event is queued. Comment lines
-            # (": ...") are ignored by EventSource but keep the socket warm.
+            # Gemini can "think" for 60-90s between events, leaving the SSE
+            # connection idle; Cloud Run / proxies / the browser drop an idle
+            # connection, so emit a keepalive comment when no real event is queued.
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
@@ -361,6 +381,99 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
         _active_demo_reviews -= 1
         if not task.done():
             task.cancel()
+
+
+def _make_client_for(platform: str, project_id: str, settings: Settings):
+    from quorum.github_client import make_github_client
+    from quorum.gitlab_client import make_client as _make_client
+    if platform == "github":
+        return make_github_client(settings)
+    return _make_client(settings, project_id=project_id)
+
+
+def _dry_run_worker(parsed: dict, settings: Settings):
+    """Step 1 — analyse only (no posting/fix), store the result in a session, and
+    emit a `session` event with can_write / has_findings / has_critical."""
+    platform = parsed["platform"]
+    project_id = parsed["project_id"]
+    iid = parsed["iid"]
+
+    async def worker(emit) -> None:
+        from quorum.agent import QuorumAgent
+        agent = QuorumAgent(settings)
+        agent._emit = emit
+        client = _make_client_for(platform, project_id, settings)
+        async with client.connect():
+            result = await agent.review(
+                project_id=project_id, mr_iid=iid, client=client,
+                # Analysis only. force bypasses the "already reviewed" guard so the
+                # demo always produces a real result.
+                post_comment=False, force=True,
+            )
+            mr_meta = await client.get_mr_metadata(project_id, iid)
+            can_write = await agent._can_write(client, project_id)
+
+        sid = _store_session({
+            "result": result,
+            "mr_meta": mr_meta,
+            "source_branch": mr_meta.get("source_branch", ""),
+            "target_branch": mr_meta.get("target_branch", "main"),
+            "project_id": project_id,
+            "mr_iid": iid,
+            "platform": platform,
+            "can_write": can_write,
+        })
+        emit(
+            "session",
+            session_id=sid,
+            can_write=can_write,
+            has_findings=len(result.findings) > 0,
+            has_critical=result.critical_count > 0,
+        )
+        emit("done", phase="analyze", delivery="skipped",
+             blocked=result.blocked, total=len(result.findings))
+
+    return worker
+
+
+def _post_worker(session: dict, settings: Settings):
+    """Step 2 — post the already-analysed findings (no re-analysis)."""
+    async def worker(emit) -> None:
+        from quorum.agent import QuorumAgent
+        agent = QuorumAgent(settings)
+        agent._emit = emit
+        platform, project_id, iid = session["platform"], session["project_id"], session["mr_iid"]
+        client = _make_client_for(platform, project_id, settings)
+        async with client.connect():
+            result = await agent.post_findings(
+                session["result"], session["mr_meta"], client, project_id, iid
+            )
+        emit("done", phase="post", delivery=result.delivery,
+             blocked=result.blocked, total=len(result.findings))
+
+    return worker
+
+
+def _fix_worker(session: dict, settings: Settings):
+    """Step 3 — open draft fix MRs for the already-analysed findings."""
+    async def worker(emit) -> None:
+        from quorum.agent import QuorumAgent
+        run_settings = settings.model_copy(update={"create_fix_mrs": True})
+        agent = QuorumAgent(run_settings)
+        agent._emit = emit
+        platform, project_id = session["platform"], session["project_id"]
+        client = _make_client_for(platform, project_id, run_settings)
+        async with client.connect():
+            result = await agent.create_fixes(
+                session["result"], session["source_branch"],
+                session["target_branch"], client, project_id,
+            )
+        session["result"] = result  # persist fix-MR urls for any later step
+        fix_count = sum(1 for f in result.findings if f.fix_mr_iid)
+        emit("done", phase="fix", fix_count=fix_count,
+             blocked=result.blocked, total=len(result.findings))
+
+    return worker
 
 
 async def _run_review_background(

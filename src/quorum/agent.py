@@ -1303,6 +1303,97 @@ class DeepReasoningAgent:
 
         return result
 
+    # ------------------------------------------------------------------
+    # Stateful demo helpers — act on an already-computed ReviewResult so the
+    # Quorum Live UI can run Post / Fix as separate steps without re-analysing.
+    # ------------------------------------------------------------------
+
+    async def post_findings(
+        self,
+        result: ReviewResult,
+        mr_meta: dict,
+        client: GitLabClientT,
+        project_id: str,
+        mr_iid: int,
+    ) -> ReviewResult:
+        """Post an already-computed review to the MR (demo Step 2).
+
+        Mirrors review()'s Stage-3 posting path (inline comments + summary + labels)
+        without re-running the analysis. Falls back to a local report on no-write.
+        """
+        if not result.findings:
+            result.delivery = "skipped"
+            self._emit("delivery", mode="skipped")
+            return result
+
+        if not await self._can_write(client, project_id):
+            log.warning("read_only_mode", project_id=project_id, reason="insufficient_access")
+            result.delivery = "read_only"
+            result.report_path = self._write_local_report(result, project_id, mr_iid)
+            self._emit("delivery", mode="read_only")
+            return result
+
+        self._emit("formatting_report")
+        self._emit("posting_comment")
+        try:
+            report_formatter = ReportFormatterAgent()
+            await report_formatter.post_review(result, client, project_id, mr_iid, mr_meta)
+            result.delivery = "posted"
+            self._emit("delivery", mode="posted")
+        except Exception as exc:
+            if _is_forbidden(exc):
+                log.warning("post_forbidden_falling_back", project_id=project_id)
+                result.delivery = "read_only"
+                result.report_path = self._write_local_report(result, project_id, mr_iid)
+                self._emit("delivery", mode="read_only")
+                return result
+            raise
+
+        if self._settings.apply_labels:
+            try:
+                self._emit("applying_labels")
+                label = (
+                    "quorum-review::critical"
+                    if result.critical_count > 0
+                    else "quorum-review"
+                )
+                await client.apply_mr_labels(project_id, mr_iid, [label])
+            except Exception as exc:
+                log.warning("label_application_failed", error=_scrub_secrets(str(exc))[:200])
+
+        self._emit(
+            "review_complete",
+            total=len(result.findings),
+            critical=result.critical_count,
+            high=result.high_count,
+            medium=result.medium_count,
+            blocked=result.blocked,
+        )
+        return result
+
+    async def create_fixes(
+        self,
+        result: ReviewResult,
+        source_branch: str,
+        target_branch: str,
+        client: GitLabClientT,
+        project_id: str,
+    ) -> ReviewResult:
+        """Open draft fix MRs for an already-computed review (demo Step 3).
+
+        Reuses _create_fix_mrs (which emits fix_mr_started / fix_mr_created).
+        """
+        if not source_branch:
+            self._emit("fixes_done", fix_count=0, reason="no_source_branch")
+            return result
+        self._emit("fixes_started")
+        result.findings = await self._create_fix_mrs(
+            result.findings, source_branch, target_branch, client, project_id
+        )
+        fix_count = sum(1 for f in result.findings if f.fix_mr_iid)
+        self._emit("fixes_done", fix_count=fix_count)
+        return result
+
     async def _can_write(self, client: GitLabClientT, project_id: str) -> bool:
         """Pre-flight: True if the token can post/push to the project.
 
