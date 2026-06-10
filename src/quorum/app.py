@@ -400,9 +400,14 @@ def _dry_run_worker(parsed: dict, settings: Settings):
 
     async def worker(emit) -> None:
         from quorum.agent import QuorumAgent
-        agent = QuorumAgent(settings)
+        # Step 1 must be PURE analysis. The deployed env sets create_fix_mrs=true
+        # (for the webhook), which would make review() open fix MRs *during the dry
+        # run* — so the dry-run trace showed fix steps. Disable it here; fix MRs are
+        # opened only in Step 3 (the fix worker re-enables it).
+        analyze_settings = settings.model_copy(update={"create_fix_mrs": False})
+        agent = QuorumAgent(analyze_settings)
         agent._emit = emit
-        client = _make_client_for(platform, project_id, settings)
+        client = _make_client_for(platform, project_id, analyze_settings)
         async with client.connect():
             result = await agent.review(
                 project_id=project_id, mr_iid=iid, client=client,
