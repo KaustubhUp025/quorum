@@ -389,6 +389,22 @@ class GitHubRESTClient:
             "default_branch": r.get("default_branch", "main"),
         }
 
+    async def get_project_permissions(self, project_id: str) -> dict:
+        """Return the caller's access level on the repo.
+
+        GitHub's ``GET /repos/{owner}/{repo}`` includes a ``permissions`` object
+        ({admin, maintain, push, pull}) for the authenticated user. ``push`` (or
+        higher) means write. Mirrors GitLabRESTClient.get_project_permissions so
+        agent.review()'s read-only pre-flight works identically on both platforms.
+        """
+        resp = await self._client.get(f"{self._base}/repos/{project_id}")
+        if resp.status_code in (401, 403, 404):
+            return {"access_level": 0, "can_write": False, "error": f"http_{resp.status_code}"}
+        resp.raise_for_status()
+        perms = (resp.json().get("permissions") or {})
+        can_write = bool(perms.get("push") or perms.get("maintain") or perms.get("admin"))
+        return {"access_level": 30 if can_write else 0, "can_write": can_write}
+
     async def create_issue(self, project_id: str, title: str, body: str, labels: list[str] | None = None) -> dict:
         """Create a GitHub issue. Returns {'number': N, 'url': '...', 'blocked': False}."""
         payload: dict = {"title": title, "body": body}
