@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import hashlib
 import json
 import re
 from pathlib import Path
 from urllib.parse import urlparse
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Header, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -241,7 +240,10 @@ def _friendly_error(exc: BaseException) -> str:
     msg = str(exc)
     low = msg.lower()
     if "resource_exhausted" in low or "429" in low or "quota" in low or "rate limit" in low:
-        return "The model is rate-limited right now (quota exhausted). Please try again in a minute."
+        return (
+            "The model is rate-limited right now (quota exhausted). "
+            "Please try again in a minute."
+        )
     if "deadline" in low or "timeout" in low:
         return "The review timed out. Please try again."
     return f"{name}: {msg[:280]}"
@@ -266,7 +268,8 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
 
     # Concurrency guard (atomic in the single-threaded loop — no await here).
     if _active_demo_reviews >= _MAX_CONCURRENT_DEMO_REVIEWS:
-        yield _sse({"event": "busy", "message": "Too many live reviews in progress. Try again shortly."})
+        yield _sse({"event": "busy",
+                    "message": "Too many live reviews in progress. Try again shortly."})
         return
     _active_demo_reviews += 1
 
@@ -277,8 +280,8 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
 
     async def run() -> None:
         from quorum.agent import QuorumAgent
-        from quorum.gitlab_client import make_client as _make_client
         from quorum.github_client import make_github_client
+        from quorum.gitlab_client import make_client as _make_client
 
         try:
             # 'fix' mode opts into draft fix-MR creation; clone settings so the
@@ -334,7 +337,8 @@ async def _demo_event_stream(parsed: dict, mode: str, settings: Settings):
     task = asyncio.create_task(run())
     try:
         # Announce immediately so the page knows the stream is live.
-        yield _sse({"event": "connected", "platform": platform, "project_id": project_id, "iid": iid, "mode": mode})
+        yield _sse({"event": "connected", "platform": platform,
+                    "project_id": project_id, "iid": iid, "mode": mode})
         while True:
             # Gemini can "think" for 60-90s between events (e.g. before its first
             # tool call), leaving the SSE connection idle. Cloud Run / proxies /
@@ -361,6 +365,7 @@ async def _run_review_background(
     settings: Settings,
 ) -> None:
     import asyncio as _asyncio
+
     from quorum.agent import QuorumAgent, _verify_fix_pipeline
 
     try:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from quorum.app import create_app, parse_mr_url, _unwrap_exc, _friendly_error
+from quorum.app import _friendly_error, _unwrap_exc, create_app, parse_mr_url
 from quorum.config import Settings
 
 
@@ -42,7 +42,7 @@ class TestParseMrUrl:
 
 class TestErrorUnwrapping:
     def test_unwrap_retry_error(self):
-        from tenacity import RetryError, Future
+        from tenacity import Future, RetryError
         cause = ValueError("429 RESOURCE_EXHAUSTED: quota")
         fut = Future(attempt_number=3)
         fut.set_exception(cause)
