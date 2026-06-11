@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/quorum/static/logo.svg" alt="Quorum logo" width="240" />
+  <img src="src/quorum/static/mark.svg" alt="Quorum logo" width="72" />
 </p>
 
 <h1 align="center">Quorum</h1>
