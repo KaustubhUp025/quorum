@@ -1,4 +1,8 @@
-# Quorum
+<p align="center">
+  <img src="src/quorum/static/logo.svg" alt="Quorum logo" width="240" />
+</p>
+
+<h1 align="center">Quorum</h1>
 
 [![CI](https://github.com/KaustubhUp025/quorum/actions/workflows/ci.yml/badge.svg)](https://github.com/KaustubhUp025/quorum/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/quorum.svg)](https://pypi.org/project/quorum/)
