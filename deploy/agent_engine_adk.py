@@ -155,6 +155,10 @@ def deploy(project: str, region: str) -> str:
             "QUORUM_GITLAB_TOKEN": gitlab_token,
             "QUORUM_GITHUB_TOKEN": github_token,
         },
+        # Keep one instance warm so the first query (e.g. a judge's) never hits a
+        # cold start — a cold boot can surface a transient 400 FAILED_PRECONDITION
+        # (code 9) on the very first reasoning-engine call. Set to 0 to save cost.
+        min_instances=1,
     )
 
     resource_name = engine.resource_name
