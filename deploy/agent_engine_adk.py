@@ -68,7 +68,7 @@ def _read_secret(project: str, secret_id: str) -> str:
     return result.stdout.strip()
 
 
-def deploy(project: str, region: str) -> str:
+def deploy(project: str, region: str, update_resource: str | None = None) -> str:
     import os
     import vertexai
     # NEW API — required for Agent Platform Playground recognition
@@ -110,9 +110,6 @@ def deploy(project: str, region: str) -> str:
 
     vertexai.init(project=project, location=region, staging_bucket=staging_bucket)
 
-    print(f"==> Deploying ADK agent via vertexai.agent_engines ({project} / {region})...")
-    print("    This uploads the package and provisions the engine — takes ~3 minutes.")
-
     # Runtime requirements for the Agent Engine container.
     requirements = [
         "quorum @ git+https://github.com/KaustubhUp025/quorum.git",
@@ -131,13 +128,13 @@ def deploy(project: str, region: str) -> str:
         "pyyaml>=6.0.3",
     ]
 
-    # Use vertexai.agent_engines.create() — this is what the Playground recognises.
-    # Passing root_agent (BaseAgent) directly; AdkApp wrapping is automatic.
+    # Shared spec for create + update. Passing root_agent (BaseAgent) directly;
+    # AdkApp wrapping is automatic. This is the form the Playground recognises.
     #
     # QUORUM_CREATE_FIX_MRS=true: allows the Playground to demonstrate fix MR creation.
     # Over-usage protection: run_review() defaults to dry_run=True, so fix MRs are only
     # created when the user explicitly passes dry_run=False AND a CRITICAL finding is found.
-    engine = agent_engines.create(
+    spec = dict(
         agent_engine=root_agent,
         requirements=requirements,
         display_name="Quorum — ADK Coordination Reviewer",
@@ -160,6 +157,17 @@ def deploy(project: str, region: str) -> str:
         # (code 9) on the very first reasoning-engine call. Set to 0 to save cost.
         min_instances=1,
     )
+
+    if update_resource:
+        # Update the EXISTING engine in place — keeps the same engine id and
+        # Playground URL, and avoids leaving a duplicate engine billing min_instances=1.
+        # Repackages from the pinned git requirement, so it picks up the latest main.
+        print(f"==> Updating existing Agent Engine in place: {update_resource}")
+        print("    Repackaging from git main + redeploying — takes ~3-5 minutes.")
+        engine = agent_engines.update(resource_name=update_resource, **spec)
+    else:
+        print(f"==> Creating NEW ADK agent via vertexai.agent_engines ({project} / {region})...")
+        engine = agent_engines.create(**spec)
 
     resource_name = engine.resource_name
     engine_id = resource_name.split("/")[-1]
@@ -191,9 +199,14 @@ def main() -> None:
     )
     parser.add_argument("--project", required=True, help="GCP project ID")
     parser.add_argument("--region", default="us-central1")
+    parser.add_argument(
+        "--update", default=None, metavar="RESOURCE_NAME",
+        help="Update an existing engine in place (full reasoningEngines/... resource "
+             "name) instead of creating a new one. Keeps the same Playground URL.",
+    )
     args = parser.parse_args()
 
-    deploy(args.project, args.region)
+    deploy(args.project, args.region, update_resource=args.update)
 
 
 if __name__ == "__main__":
