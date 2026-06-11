@@ -12,6 +12,8 @@ Quorum reviews merge requests for coordination anti-patterns that static linters
 
 Built on **Gemini 2.5 Pro** + **GitLab's MCP server** (its code-search superpower), deployed on **Google Cloud** — an interactive **Agent Engine Playground** that calls GitLab MCP tools live, plus a **Cloud Run** webhook and CLI. See [MCP integration](#mcp-integration--the-partner-superpower).
 
+> **▶ Try it live:** [**quorum-3fnjzg6adq-uc.a.run.app/demo**](https://quorum-3fnjzg6adq-uc.a.run.app/demo) — paste a GitLab MR or GitHub PR URL and watch the agent review it step by step. See [Quorum Live](#quorum-live--hosted-web-playground).
+
 > *"SonarQube doesn't have rules for saga compensation. Semgrep can't reason across service boundaries. CodeRabbit can't search the full repo. Quorum can."*
 
 ---
@@ -64,6 +66,28 @@ Quorum was also run (dry-run, no comment posted) on three open MRs in GitLab's o
 | `gitlab-org/gitlab` | Ruby | [!233672](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/233672) | RULE_10 | 🟢 PASS | Pessimistic `FOR UPDATE` lock already present in the query |
 
 A full Quorum review comment was also posted on `gitlab-org/gitaly` !8812 (note_id 3424838512): [view comment](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/8812#note_3424838512)
+
+---
+
+## Quorum Live — hosted web playground
+
+A single-page web demo, served by the same Cloud Run service as the webhook, that lets anyone run a real review from the browser — no install, no token.
+
+**[quorum-3fnjzg6adq-uc.a.run.app/demo](https://quorum-3fnjzg6adq-uc.a.run.app/demo)**
+
+Paste a GitLab MR or GitHub PR URL and the agent runs as a **stateful, three-step flow** — each step does only its part and streams its own process over Server-Sent Events:
+
+| Step | What it does | Writes to GitLab? |
+|---|---|---|
+| **1 · Dry run** | Pure analysis — surface detection → Gemini reasoning → findings. | No — safe, read-only |
+| **2 · Post review** | Posts the *already-found* findings as the MR comment + inline notes, applies labels, returns a deep-link to the posted comment. | Yes |
+| **3 · Fix MR** | Drafts a fix MR for each critical finding — reads the file, asks Gemini for the corrected version, commits a branch, opens a draft MR. | Yes |
+
+Steps 2 and 3 act on the Step-1 findings held in a short-lived server session — **no re-analysis** — so you watch the *posting* and *fixing* phases as distinct, live traces (agent trace + pipeline stages + findings cards). If the repo is read-only for Quorum, Steps 2/3 stay locked and the page explains the issue/SARIF fallback.
+
+The page also has an **interactive architecture diagram**, the **14-rule taxonomy**, and a **"Three ways to run it"** panel (CLI / webhook / Agent Engine, each with a concrete example). The demo HTML is served with `Cache-Control: no-cache` so every deploy is visible immediately.
+
+> Built with FastAPI SSE + Alpine.js (single-file `src/quorum/static/demo.html`). In-memory sessions are per-instance — fine for the single warm demo instance (min-instances=1).
 
 ---
 
@@ -888,7 +912,7 @@ For organisations deploying Quorum as a shared service (GitHub App / GitLab App)
 ```bash
 pip install -e ".[dev]"
 
-pytest                     # run all 223 tests
+pytest                     # run all 259 tests
 ruff check src/ tests/     # lint
 mypy src/                  # type check
 ```
@@ -906,6 +930,7 @@ mypy src/                  # type check
 | Data models | Pydantic 2.13.4 |
 | Config | pydantic-settings 2.14.1 + `.quorum.yml` (pyyaml 6.0.3) |
 | Webhook server | FastAPI 0.136.3 + Uvicorn 0.48.0 |
+| Live web demo | FastAPI SSE (Server-Sent Events) + Alpine.js + Tailwind — single-file `static/demo.html` |
 | CLI | Click 8.4.1 |
 | Output formats | Markdown MR comment · SARIF 2.1.0 |
 | Cloud deployment | Google Cloud Run + Vertex AI Agent Engine |
