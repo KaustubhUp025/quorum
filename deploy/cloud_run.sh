@@ -27,6 +27,11 @@ docker build -t "${IMAGE}" .
 echo "==> Pushing to Container Registry"
 docker push "${IMAGE}"
 
+# NOTE: --set-env-vars REPLACES the entire env set on each deploy, so the full
+# runtime config must be listed here (omitting any var silently drops it from the
+# live service). QUORUM_USE_VERTEX_AI=true makes the agent authenticate to Gemini
+# via the Cloud Run service-account ADC instead of the depletable API key — this
+# requires the SA to hold roles/aiplatform.user, which ./deploy/setup_gcp.sh grants.
 echo "==> Deploying Cloud Run service (project=${PROJECT_ID}, region=${REGION})"
 gcloud run deploy "${SERVICE_NAME}" \
   --image "${IMAGE}" \
@@ -35,7 +40,13 @@ gcloud run deploy "${SERVICE_NAME}" \
   --project "${PROJECT_ID}" \
   --port 8080 \
   --allow-unauthenticated \
-  --set-env-vars "QUORUM_CREATE_FIX_MRS=true,QUORUM_CORRELATE_CI=true" \
+  --set-env-vars "\
+QUORUM_CREATE_FIX_MRS=true,\
+QUORUM_CORRELATE_CI=true,\
+QUORUM_USE_VERTEX_AI=true,\
+QUORUM_GOOGLE_CLOUD_PROJECT=${PROJECT_ID},\
+QUORUM_GOOGLE_CLOUD_LOCATION=${REGION},\
+QUORUM_MCP_MODE=glab" \
   --set-secrets "\
 QUORUM_GITLAB_TOKEN=quorum-gitlab-token:latest,\
 QUORUM_GEMINI_API_KEY=quorum-gemini-key:latest,\
