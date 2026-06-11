@@ -438,11 +438,11 @@ def _dry_run_worker(parsed: dict, settings: Settings):
             "session",
             session_id=sid,
             can_write=can_write,
-            has_findings=len(result.findings) > 0,
+            has_findings=result.issue_count > 0,
             has_critical=result.critical_count > 0,
         )
         emit("done", phase="analyze", delivery="skipped",
-             blocked=result.blocked, total=len(result.findings))
+             blocked=result.blocked, total=result.issue_count)
 
     return worker
 
@@ -460,7 +460,7 @@ def _post_worker(session: dict, settings: Settings):
                 session["result"], session["mr_meta"], client, project_id, iid
             )
         emit("done", phase="post", delivery=result.delivery,
-             blocked=result.blocked, total=len(result.findings))
+             blocked=result.blocked, total=result.issue_count)
 
     return worker
 
@@ -482,7 +482,7 @@ def _fix_worker(session: dict, settings: Settings):
         session["result"] = result  # persist fix-MR urls for any later step
         fix_count = sum(1 for f in result.findings if f.fix_mr_iid)
         emit("done", phase="fix", fix_count=fix_count,
-             blocked=result.blocked, total=len(result.findings))
+             blocked=result.blocked, total=result.issue_count)
 
     return worker
 

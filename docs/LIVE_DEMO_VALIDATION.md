@@ -42,7 +42,7 @@ date: **2026-06-11**. Line snippets are quoted verbatim from the diffs.
 
 | # | Target | Lang | State | Predicted rule(s) | Expected finding | Match? |
 |---|---|---|---|---|---|:---:|
-| G1 | [Brints/spoken-api #71](https://github.com/Brints/spoken-api/pull/71) | Python | merged | RULE_08 🔴 | Flag the Kafka consumer offset-loss regression | |
+| G1 | [Brints/spoken-api #71](https://github.com/Brints/spoken-api/pull/71) | Python | merged | RULE_12 🟡 *(primary)* · RULE_08 surfaced only | DLQ-missing on the egress consumer; RULE_08 surfaces but is correctly **not** elevated (no manual commit) | 🟡 verified 2026-06-11 |
 | G2 | [WaiMarn/S402017Project #7](https://github.com/WaiMarn/S402017Project/pull/7) | Python | merged | RULE_08 🔴 | Flag auto-commit + manual commit conflict | |
 | G3 | [iliya-malecki/edgy #3](https://github.com/iliya-malecki/edgy/pull/3) | Python | open | RULE_08 🔴 | Flag auto-commit in the Kafka runtime | |
 | G4 | [CarriedWorldUniverse/nexus #371](https://github.com/CarriedWorldUniverse/nexus/pull/371) | Go | merged | RULE_06 🟠 | Flag deterministic backoff (no jitter) | |
