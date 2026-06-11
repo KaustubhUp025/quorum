@@ -115,7 +115,7 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-3 mt-5">
-        <span class="text-sm text-slate-400">Step 1 is a <b class="text-slate-300">safe dry run</b> — analyse only, nothing is written to GitLab. We'll unlock <b class="text-slate-300">Post</b> &amp; <b class="text-slate-300">Fix</b> once findings are in.</span>
+        <span class="text-sm text-slate-400" x-html="helperLine()"></span>
         <button x-show="step1!=='done'" @click="url='https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1'"
                 type="button"
                 class="ml-auto px-4 py-2 rounded-lg text-sm font-medium border border-brand-500/40 text-brand-300 hover:bg-brand-500/10 transition">
@@ -356,25 +356,58 @@
 
   <!-- ── Architecture / deployment ───────────────────────────────── -->
   <section id="architecture" class="bg-slate-900/40 border-y border-slate-800">
-    <div class="max-w-7xl mx-auto px-5 py-16">
+    <div class="max-w-7xl mx-auto px-5 py-16" x-data="runWays()">
       <div class="text-center mb-10">
         <h2 class="text-4xl font-bold text-white">Three ways to run it</h2>
+        <p class="mt-4 text-lg text-slate-400">Same review pipeline, three entry points.
+          <span class="text-slate-500">Pick one to see it in action.</span></p>
       </div>
+
+      <!-- selectable cards -->
       <div class="grid md:grid-cols-3 gap-5">
-        <div class="glass border border-slate-800 rounded-2xl p-6">
-          <div class="text-2xl">⌨️</div>
-          <h3 class="font-semibold text-white mt-3">CLI</h3>
-          <p class="text-base text-slate-400 mt-2"><code class="text-brand-400">quorum review group/project 1</code> — local review, SARIF output for GitHub Code Scanning.</p>
+        <template x-for="w in ways" :key="w.id">
+          <button @click="sel = w.id" type="button"
+                  class="text-left glass border rounded-2xl p-6 transition"
+                  :class="sel===w.id ? 'border-brand-500 ring-2 ring-brand-500/40' : 'border-slate-800 hover:border-brand-500/50'">
+            <div class="flex items-center gap-3">
+              <div class="text-2xl" x-text="w.icon"></div>
+              <div class="text-xs font-mono px-2 py-0.5 rounded-full"
+                   :class="sel===w.id ? 'bg-brand-500/20 text-brand-300' : 'bg-slate-800 text-slate-400'"
+                   x-text="w.tag"></div>
+            </div>
+            <h3 class="font-semibold text-white mt-3" x-text="w.title"></h3>
+            <p class="text-base text-slate-400 mt-2 leading-relaxed" x-text="w.blurb"></p>
+          </button>
+        </template>
+      </div>
+
+      <!-- detail panel: example + what you get -->
+      <div class="mt-6 grid md:grid-cols-2 gap-5 fade-in" :key="sel">
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-5 font-mono text-sm overflow-x-auto">
+          <div class="text-slate-600" x-text="cur().caption"></div>
+          <template x-for="(ln, i) in cur().code" :key="i">
+            <div class="mt-1.5 whitespace-nowrap">
+              <span class="text-slate-600 select-none" x-show="ln.p" x-text="ln.p + ' '"></span><span :class="ln.cls" x-text="ln.t"></span>
+            </div>
+          </template>
         </div>
-        <div class="glass border border-slate-800 rounded-2xl p-6">
-          <div class="text-2xl">🪝</div>
-          <h3 class="font-semibold text-white mt-3">Cloud Run webhook</h3>
-          <p class="text-base text-slate-400 mt-2">A GitLab MR webhook triggers an automatic review, inline comments, and draft fix MRs — secret-validated.</p>
-        </div>
-        <div class="glass border border-slate-800 rounded-2xl p-6">
-          <div class="text-2xl">🤖</div>
-          <h3 class="font-semibold text-white mt-3">Agent Engine Playground</h3>
-          <p class="text-base text-slate-400 mt-2">A Vertex AI ADK agent that calls GitLab's MCP server live — chat with the reviewer.</p>
+        <div class="glass border border-slate-800 rounded-xl p-5 flex flex-col">
+          <div class="text-sm font-semibold text-slate-300 uppercase tracking-wide">What you get</div>
+          <ul class="mt-3 space-y-2">
+            <template x-for="(g, i) in cur().gets" :key="i">
+              <li class="flex items-start gap-2 text-base text-slate-300">
+                <span class="text-brand-400 mt-0.5">✓</span><span x-text="g"></span>
+              </li>
+            </template>
+          </ul>
+          <template x-if="cur().cta">
+            <a :href="cur().cta.href"
+               :target="cur().cta.href.startsWith('http') ? '_blank' : '_self'" rel="noopener"
+               class="inline-block mt-auto pt-4">
+              <span class="inline-block px-5 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-semibold text-sm transition"
+                    x-text="cur().cta.label"></span>
+            </a>
+          </template>
         </div>
       </div>
       <div class="mt-8 grid sm:grid-cols-3 gap-4 text-center text-sm">
@@ -434,6 +467,46 @@
       };
     }
 
+    function runWays() {
+      return {
+        sel: 'webhook',
+        ways: [
+          { id: 'cli', icon: '⌨️', title: 'CLI', tag: 'local · SARIF',
+            blurb: 'Run a review from your terminal. SARIF output drops straight into GitHub Code Scanning.',
+            caption: '# from your laptop or CI',
+            code: [
+              { p: '$', t: 'quorum review quorum-hackathon/quorum-demo 1', cls: 'text-slate-100' },
+              { p: '', t: '→ 5 findings · 3 critical', cls: 'text-amber-300' },
+              { p: '', t: '→ wrote quorum.sarif', cls: 'text-brand-400' },
+              { p: '', t: 'exit 1  (gates your pipeline)', cls: 'text-slate-500' },
+            ],
+            gets: ['Runs anywhere — laptop or CI', 'SARIF for GitHub Code Scanning', 'Non-zero exit gates your pipeline'],
+            cta: null },
+          { id: 'webhook', icon: '🪝', title: 'Cloud Run webhook', tag: 'automatic · live',
+            blurb: 'A GitLab MR webhook fires on every push. Quorum reviews, posts inline comments, and opens draft fix MRs — secret-validated.',
+            caption: '# POST /webhook/gitlab',
+            code: [
+              { p: '', t: 'X-Gitlab-Token ✓  (HMAC verified)', cls: 'text-slate-100' },
+              { p: '', t: '→ posted review + 5 inline notes', cls: 'text-brand-400' },
+              { p: '', t: '→ opened draft fix MR !34', cls: 'text-emerald-400' },
+            ],
+            gets: ['Zero-click on every merge request', 'HMAC secret-validated', 'Re-reviews automatically after a fix merges'],
+            cta: { label: 'This is the live demo above ↑', href: '#playground' } },
+          { id: 'agent', icon: '🤖', title: 'Agent Engine Playground', tag: 'chat · Vertex AI',
+            blurb: "A Vertex AI ADK agent that calls GitLab's MCP server live. Ask it anything about an MR and watch it reason across the repo.",
+            caption: '# in the Agent Engine Playground',
+            code: [
+              { p: 'You:', t: 'review MR 1 in quorum-demo', cls: 'text-emerald-400' },
+              { p: 'Quorum:', t: '[calls get_merge_request_diffs over MCP]', cls: 'text-brand-400' },
+              { p: '', t: 'lost-update on accounting_service.py:16', cls: 'text-slate-300' },
+            ],
+            gets: ['Conversational — ask follow-up questions', 'Live GitLab MCP tool calls over the network', 'Gemini 2.5 Pro reasoning across the repo'],
+            cta: { label: 'Try it live in the Playground →', href: 'https://console.cloud.google.com/agent-platform/agents/1659372503279075328/playground?project=gen-lang-client-0294573094' } },
+        ],
+        cur() { return this.ways.find(w => w.id === this.sel) || this.ways[0]; },
+      };
+    }
+
     function quorumDemo() {
       return {
         url: 'https://gitlab.com/quorum-hackathon/quorum-demo/-/merge_requests/1',
@@ -475,6 +548,30 @@
             { n: 2, label: 'Post review', sub: 'comment on the MR', state: this.step2 },
             { n: 3, label: 'Fix MR',      sub: 'draft patches',     state: this.step3 },
           ];
+        },
+        helperLine() {
+          const b = (t) => `<b class="text-slate-300">${t}</b>`;
+          if (this.step3 === 'done') {
+            return `All three steps done. Merge a fix MR and the Cloud Run webhook ${b('re-reviews automatically')} — detect → fix → re-review → unblock.`;
+          }
+          if (this.step3 === 'available' || this.step3 === 'active') {
+            return `Review posted. ${b('Step 3')} drafts a fix MR for each critical finding — separate branches, opened as drafts for you to review.`;
+          }
+          if (this.step2 === 'done') {
+            return `Review posted to the MR. No critical findings to auto-fix, so this MR is ${b('safe to merge')}.`;
+          }
+          if (this.step2 === 'available' || this.step2 === 'active') {
+            return `Findings are in. ${b('Step 2')} posts the review as inline comments on the MR — this is the first step that writes to GitLab.`;
+          }
+          if (this.step1 === 'done') {
+            if (!this.canWrite) return `Quorum is ${b('read-only')} on this repo — in a real run it files an issue or emits a ${b('SARIF')} report instead of writing to GitLab.`;
+            if (!this.hasFindings) return `Dry run found ${b('no issues')} — safe to merge. Nothing to post or fix.`;
+            return `Findings are in. ${b('Step 2')} posts the review as inline comments on the MR — this writes to GitLab.`;
+          }
+          if (this.running) {
+            return `Running a ${b('safe dry run')} — analysing only, nothing is written to GitLab yet.`;
+          }
+          return `Step 1 is a ${b('safe dry run')} — analyse only, nothing is written to GitLab. We'll unlock ${b('Post')} &amp; ${b('Fix')} once findings are in.`;
         },
 
         setStage(id, state, detail) {
