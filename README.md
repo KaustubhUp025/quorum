@@ -113,7 +113,7 @@ Quorum runs the **same three-stage pipeline** (SurfaceDetector → DeepReasoning
 3. Click the latest: **Quorum — ADK Coordination Reviewer**
 4. Select the **Playground** tab — a chat interface appears
 
-Or use the direct link: [Open Playground](https://console.cloud.google.com/agent-platform/agents/1659372503279075328/playground?project=gen-lang-client-0294573094)
+Or use the direct link: [Open the agent in the Console](https://console.cloud.google.com/agent-platform/runtimes/locations/us-central1/agent-engines/1659372503279075328/dashboard?project=gen-lang-client-0294573094) → then click the **Playground** tab. (The Playground is IAM-gated — you need `roles/aiplatform.user` on the project; outside viewers should deploy their own or be granted access.)
 
 **Example — live review with real comment posting:**
 ```
