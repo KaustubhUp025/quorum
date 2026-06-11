@@ -42,22 +42,37 @@ date: **2026-06-11**. Line snippets are quoted verbatim from the diffs.
 
 | # | Target | Lang | State | Predicted rule(s) | Expected finding | Match? |
 |---|---|---|---|---|---|:---:|
-| G1 | [Brints/spoken-api #71](https://github.com/Brints/spoken-api/pull/71) | Python | merged | RULE_12 🟡 *(primary)* · RULE_08 surfaced only | DLQ-missing on the egress consumer; RULE_08 surfaces but is correctly **not** elevated (no manual commit) | 🟡 verified 2026-06-11 |
+| G1 | [Brints/spoken-api #71](https://github.com/Brints/spoken-api/pull/71) | Python | merged | RULE_12 🔴 *(always)* · RULE_08 🟠 *(intermittent)* | DLQ-missing on the egress consumer (always); auto-commit data-loss (sometimes elevated) | ✅ verified 2026-06-11 |
 | G2 | [WaiMarn/S402017Project #7](https://github.com/WaiMarn/S402017Project/pull/7) | Python | merged | RULE_08 🔴 | Flag auto-commit + manual commit conflict | |
 | G3 | [iliya-malecki/edgy #3](https://github.com/iliya-malecki/edgy/pull/3) | Python | open | RULE_08 🔴 | Flag auto-commit in the Kafka runtime | |
 | G4 | [CarriedWorldUniverse/nexus #371](https://github.com/CarriedWorldUniverse/nexus/pull/371) | Go | merged | RULE_06 🟠 | Flag deterministic backoff (no jitter) | |
 | G5 | [carissafarry/tag-me #17](https://github.com/carissafarry/tag-me/pull/17) | Go | merged | RULE_01 🔴 | Flag static-value Redis lock | |
 | G6 | [BasedHardware/omi #7801](https://github.com/BasedHardware/omi/pull/7801) | Python | open | **RULE_01 control 🟢** | **No finding** — lock is correct | |
 
-### G1 — Brints/spoken-api #71 → RULE_08 🔴
-**Why:** This PR *introduces* the bug — it flips the consumer config from safe to unsafe:
-```diff
--            enable_auto_commit=False,
-+            enable_auto_commit=True,
+### G1 — Brints/spoken-api #71 → RULE_12 (always) + RULE_08 (intermittent)
+**Why:** The egress Kafka consumer added in this PR has two coordination problems:
+```python
+enable_auto_commit=True,            # diff flips this from False → True
+...
+try:
+    ... process frame ...
+except Exception as frame_err:
+    logger.exception("Error processing egress frame: %s", frame_err)  # logs + discards
 ```
-With auto-commit on, the offset is committed on a timer regardless of whether the message was
-processed; a crash mid-handler silently drops the message (breaks at-least-once delivery).
-**Expected:** RULE_08 CRITICAL, framed as a regression (the diff turned a correct setting off).
+1. **RULE_12 (DLQ missing)** — the `except` just logs and drops the message; a poison-pill is
+   silently lost with no dead-letter path. There is **no manual commit**, so this is the precise,
+   reliable finding.
+2. **RULE_08 (auto-commit data loss)** — auto-commit fires on a timer, so a crash after
+   auto-commit but before processing loses the message.
+
+**Observed (2026-06-11):** the result is **non-deterministic** because the Gemini reasoning layer
+chooses which surfaced rules to elevate:
+- **Cloud Run `/demo`** → reported **RULE_12 MEDIUM** only (declined RULE_08).
+- **Vertex Agent Engine** → reported **RULE_08 HIGH** (`ws_router.py:221`) **+ RULE_12 MEDIUM**
+  (`ws_router.py:328`), and confirmed RULE_01 / RULE_03 pass.
+
+**Expected:** RULE_12 every run; RULE_08 on some runs. Both are correct — count either as a match.
+The earlier doc over-committed to RULE_08-only; reality is RULE_12-always with RULE_08 intermittent.
 
 ### G2 — WaiMarn/S402017Project #7 → RULE_08 🔴
 **Why:** Textbook RULE_08 — auto-commit **and** a manual commit in the same consumer loop:
