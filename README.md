@@ -886,6 +886,10 @@ The `--json` flag outputs the raw JSON array, making it easy to pipe into `jq` o
 
 The following features are planned for future releases. Community contributions are welcome — see [CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
+### Public chat playground (hosted, no-login)
+
+The Agent Engine Playground is IAM-gated — outside viewers can't open it without their own Google Cloud credentials. A planned **public chat proxy** will add a "chat with the reviewer" box directly on the hosted `/demo` page: a new backend endpoint streams `reasoningEngines:streamQuery` (SSE) using the Cloud Run service account's ADC, so anyone can converse with the live ADK agent — no Google account required. Needs a rate-limit / abuse guard and a per-session cost cap before going public.
+
 ### Conversation follow-up (close-the-loop)
 
 When Quorum files an issue or posts a review comment, the issue URL is stored in the audit log. A planned `quorum follow-up` command will:

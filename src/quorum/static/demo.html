@@ -341,9 +341,7 @@
             </div>
             <div class="font-mono text-sm leading-relaxed space-y-1 min-h-[18rem]">
               <template x-for="(ln, i) in shown" :key="i">
-                <div class="whitespace-pre-wrap">
-                  <span x-show="ln.who" class="select-none" :class="ln.who==='You' ? 'text-emerald-400' : 'text-brand-400'" x-text="ln.who + ' '"></span><span :class="ln.cls" x-text="ln.text"></span>
-                </div>
+                <div class="break-words text-left"><span x-show="ln.who" class="select-none" :class="ln.who==='You' ? 'text-emerald-400' : 'text-brand-400'" x-text="ln.who + ' '"></span><span :class="ln.cls" x-text="ln.text"></span></div>
               </template>
               <span x-show="playing" class="inline-block w-2 h-4 bg-brand-400 animate-pulse align-middle"></span>
             </div>
