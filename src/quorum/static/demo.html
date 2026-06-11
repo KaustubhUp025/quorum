@@ -894,7 +894,7 @@
               this.verdict = {
                 blocked: e.blocked,
                 text: e.blocked ? '⛔ Merge blocked — critical coordination bug' : (e.total ? '⚠ Issues found' : '✅ No issues'),
-                detail: `${e.total} finding(s) · ${e.critical} critical · ${e.high} high · ${e.medium} medium`,
+                detail: `${e.total} finding(s) · ${e.critical} critical · ${e.high} high · ${e.medium} medium${e.low ? ` · ${e.low} low` : ''}`,
               };
               if (this.phase === 'analyze') { this.setStage('reason', 'done'); this.setStage('findings', 'done', `${e.total} finding(s)`); }
               break;

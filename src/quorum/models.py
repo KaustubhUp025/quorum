@@ -83,6 +83,14 @@ class ReviewResult(BaseModel):
     def pass_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == Severity.PASS)
 
+    @property
+    def issue_count(self) -> int:
+        """Real issues = findings that are not PASS (explicit "rule checked, no
+        violation") results. Use this for any user-facing "N findings" total;
+        len(findings) over-counts because it includes PASS entries that are
+        never rendered as cards nor in the severity breakdown."""
+        return sum(1 for f in self.findings if f.severity != Severity.PASS)
+
 
 class MCPToolCall(BaseModel):
     name: str

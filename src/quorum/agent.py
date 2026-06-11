@@ -1242,10 +1242,11 @@ class DeepReasoningAgent:
         )
         self._emit(
             "review_complete",
-            total=len(findings),
+            total=result.issue_count,
             critical=result.critical_count,
             high=result.high_count,
             medium=result.medium_count,
+            low=result.low_count,
             blocked=blocked,
         )
 
@@ -1372,10 +1373,11 @@ class DeepReasoningAgent:
         self._emit("delivery", mode="posted")
         self._emit(
             "review_complete",
-            total=len(result.findings),
+            total=result.issue_count,
             critical=result.critical_count,
             high=result.high_count,
             medium=result.medium_count,
+            low=result.low_count,
             blocked=result.blocked,
         )
         return result
