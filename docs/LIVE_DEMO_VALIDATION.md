@@ -144,7 +144,7 @@ distinguish a token-based lock and a dedup marker from a static-value lock.
 
 | # | Target | Lang | State | Predicted rule(s) | Expected finding | Match? |
 |---|---|---|---|---|---|:---:|
-| L1 | [lilacashes/music-library-tools !16](https://gitlab.com/lilacashes/music-library-tools/-/merge_requests/16) | Python | merged | RULE_14 🟠 (+ RULE_06 🟠) | Flag the no-timeout upload + retry w/o backoff | |
+| L1 | [lilacashes/music-library-tools !16](https://gitlab.com/lilacashes/music-library-tools/-/merge_requests/16) | Python | merged | RULE_14 🟠 + RULE_06 🟠 | Flag the no-timeout upload + retry w/o backoff | ✅ verified 2026-06-11 |
 | L2 | [gitlab-community … 35318847 !7](https://gitlab.com/gitlab-community/community-projects/2026-02-ai-hackathon/35318847/-/merge_requests/7) | Python | merged | RULE_10 🔴 | Flag the stock lost-update | |
 | L3 | [gitlab-community … 35519097 !8](https://gitlab.com/gitlab-community/community-projects/2026-02-ai-hackathon/35519097/-/merge_requests/8) | Python | closed | RULE_14 🟠 | Flag the no-timeout payment poll | |
 | L4 | [the-microservice-dungeon/…/robot !51](https://gitlab.com/the-microservice-dungeon/core-services/robot/-/merge_requests/51) | Kotlin | merged | RULE_09 🔴 | Flag the DB-tx + Kafka dual-write | |
@@ -164,6 +164,12 @@ if self.is_rate_limited(response) and max_retry > 0:
 ```
 **Expected:** RULE_14 HIGH on the `requests.post` (no `timeout=`). Bonus if it also raises RULE_06
 on the backoff-free recursive retry (up to 100 deep).
+
+**Observed (2026-06-11, Cloud Run `/demo`): ✅ exceeded prediction.** 3 findings:
+- RULE_14 HIGH — HTTP request without a timeout (`media_tools/util/mixcloud.py:175`)
+- RULE_06 HIGH — immediate retry on ConnectionError without backoff (`mixcloud.py:178`)
+- RULE_06 MEDIUM — exponential backoff lacks jitter (`media_tools/backup_lastfm_data.py:55`) —
+  a second RULE_06 in a *different file*, found via cross-file `semantic_code_search`.
 
 ### L2 — gitlab-community 35318847 !7 → RULE_10 🔴
 **Why:** Classic read-modify-write with no row lock or CAS:
