@@ -85,7 +85,7 @@ Paste a GitLab MR or GitHub PR URL and the agent runs as a **stateful, three-ste
 
 Steps 2 and 3 act on the Step-1 findings held in a short-lived server session — **no re-analysis** — so you watch the *posting* and *fixing* phases as distinct, live traces (agent trace + pipeline stages + findings cards). If the repo is read-only for Quorum, Steps 2/3 stay locked and the page explains the issue/SARIF fallback.
 
-The page also has an **interactive architecture diagram**, the **14-rule taxonomy**, and a **"Three ways to run it"** panel (CLI / webhook / Agent Engine, each with a concrete example). The demo HTML is served with `Cache-Control: no-cache` so every deploy is visible immediately.
+The page also has an **interactive architecture diagram**, the **14-rule taxonomy**, a **"Three ways to run it"** panel (CLI / webhook / Agent Engine, each with a concrete example), and an **Agent Engine Playground showcase** — an auto-playing replay of a real MCP-chat session plus a guided "open it yourself with your own Google Cloud credentials" walkthrough (the Playground is IAM-gated, so it can't be opened anonymously). The demo HTML is served with `Cache-Control: no-cache` so every deploy is visible immediately.
 
 > Built with FastAPI SSE + Alpine.js (single-file `src/quorum/static/demo.html`). In-memory sessions are per-instance — fine for the single warm demo instance (min-instances=1).
 
