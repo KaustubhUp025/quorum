@@ -431,7 +431,15 @@ class DeepReasoningAgent:
                 log.warning("null_candidate_content", round=round_num,
                             finish_reason=str(candidate.finish_reason))
                 break
-            contents.append(candidate.content)
+            # Vertex AI rejects the ENTIRE next request with 400 INVALID_ARGUMENT
+            # ("Please use a valid role: user, model") if any prior content has an
+            # empty/None role. Gemini 2.5 Pro occasionally returns a model turn —
+            # most often a thought-only turn on a hard multi-round diff — with role
+            # unset; coerce it to "model" before echoing it back into history.
+            model_turn = candidate.content
+            if not getattr(model_turn, "role", None):
+                model_turn.role = "model"
+            contents.append(model_turn)
 
             # Collect function calls from this turn (ignore thought/search parts)
             function_calls = [

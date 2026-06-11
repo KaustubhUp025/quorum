@@ -44,8 +44,8 @@ date: **2026-06-11**. Line snippets are quoted verbatim from the diffs.
 |---|---|---|---|---|---|:---:|
 | G1 | [Brints/spoken-api #71](https://github.com/Brints/spoken-api/pull/71) | Python | merged | RULE_12 🔴 *(always)* · RULE_08 🟠 *(intermittent)* | DLQ-missing on the egress consumer (always); auto-commit data-loss (sometimes elevated) | ✅ verified 2026-06-11 |
 | G2 | [WaiMarn/S402017Project #7](https://github.com/WaiMarn/S402017Project/pull/7) | Python | merged | RULE_08 🔴 | Flag auto-commit + manual commit conflict | |
-| G3 | [iliya-malecki/edgy #3](https://github.com/iliya-malecki/edgy/pull/3) | Python | open | RULE_08 🔴 | Flag auto-commit in the Kafka runtime | |
-| G4 | [CarriedWorldUniverse/nexus #371](https://github.com/CarriedWorldUniverse/nexus/pull/371) | Go | merged | RULE_06 🟠 | Flag deterministic backoff (no jitter) | |
+| G3 | [iliya-malecki/edgy #3](https://github.com/iliya-malecki/edgy/pull/3) | Python | open | **RULE_08 control 🟢** *(corrected)* | **No finding** — auto-commit alone, no manual ack | ✅ verified 2026-06-11 |
+| G4 | [CarriedWorldUniverse/nexus #371](https://github.com/CarriedWorldUniverse/nexus/pull/371) | Go | merged | RULE_06 🟠 | Flag deterministic backoff (no jitter) | ✅ verified 2026-06-11 *(+ RULE_11 bonus)* |
 | G5 | [carissafarry/tag-me #17](https://github.com/carissafarry/tag-me/pull/17) | Go | merged | RULE_01 🔴 | Flag static-value Redis lock | |
 | G6 | [BasedHardware/omi #7801](https://github.com/BasedHardware/omi/pull/7801) | Python | open | **RULE_01 control 🟢** | **No finding** — lock is correct | |
 
