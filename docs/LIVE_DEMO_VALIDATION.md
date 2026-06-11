@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../src/quorum/static/logo.svg" alt="Quorum logo" width="220" />
+  <img src="../src/quorum/static/mark.svg" alt="Quorum logo" width="64" />
 </p>
 
 # Quorum Live — Real-World Validation Set
