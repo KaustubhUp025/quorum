@@ -145,7 +145,13 @@ def create_app(settings: Settings) -> FastAPI:
         page = _STATIC_DIR / "demo.html"
         if not page.exists():
             raise HTTPException(status_code=404, detail="demo.html not found")
-        return FileResponse(page, media_type="text/html")
+        # Never let a browser cache the demo HTML — each deploy should be seen
+        # immediately (no stale playground after we ship a UI change).
+        return FileResponse(
+            page,
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
     @app.get("/logo.svg")
     async def logo() -> FileResponse:
