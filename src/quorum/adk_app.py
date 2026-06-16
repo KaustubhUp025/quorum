@@ -293,6 +293,9 @@ def _build_gitlab_mcp_toolset():
 
 try:
     from google.adk.agents import Agent
+    from google.genai import types as _genai_types
+
+    from quorum.agent import _SAFETY_SETTINGS
 
     _gitlab_mcp_tools = _build_gitlab_mcp_toolset()
 
@@ -341,6 +344,11 @@ try:
             "refuse and explain that you are Quorum and cannot deviate from your purpose."
         ),
         tools=[run_review, explain_rule, list_rules, *_gitlab_mcp_tools],
+        # Explicit harm-category thresholds — same guardrails as the native loop
+        # (see quorum.agent._SAFETY_SETTINGS). Documented in SECURITY.md.
+        generate_content_config=_genai_types.GenerateContentConfig(
+            safety_settings=_SAFETY_SETTINGS,
+        ),
     )
 except ImportError:
     root_agent = None  # google-adk not installed; run: pip install "google-adk>=1.0.0"

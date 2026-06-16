@@ -141,6 +141,24 @@ _GROUNDING_TOOLS = [
     types.Tool(google_search=types.GoogleSearch()),
 ]
 
+# Explicit Gemini/Vertex safety thresholds applied to every generate_content call.
+# Quorum reviews source code — including security/exploit snippets and infra config — which
+# routinely trips the default DANGEROUS_CONTENT filter and returns empty candidates (see the
+# safety_block_or_quota warnings in _generate_content). We set the four standard harm categories
+# to BLOCK_ONLY_HIGH: genuinely harmful generation is still blocked, but legitimate code review
+# is not false-positived into a 0-finding result. Low temperature (0.1) further constrains output.
+# Documented in SECURITY.md. (If security-heavy diffs still block, the documented fallback is
+# OFF for DANGEROUS_CONTENT only.)
+_SAFETY_SETTINGS = [
+    types.SafetySetting(category=_c, threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH)
+    for _c in (
+        types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    )
+]
+
 # Small fixed thinking budget for the forced final-summary turn. Enough to stitch
 # together findings already gathered during investigation, but capped so the turn
 # cannot be spent entirely on thought tokens (which would emit no JSON text).
@@ -351,6 +369,7 @@ class DeepReasoningAgent:
             config = types.GenerateContentConfig(
                 cached_content=self._cache_name,
                 temperature=0.1,
+                safety_settings=_SAFETY_SETTINGS,
                 thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
             )
         else:
@@ -358,6 +377,7 @@ class DeepReasoningAgent:
                 system_instruction=SYSTEM_PROMPT,
                 tools=None if summary else _GEMINI_TOOLS,
                 temperature=0.1,
+                safety_settings=_SAFETY_SETTINGS,
                 # Dynamic thinking: Gemini 2.5 Pro decides reasoning depth per turn.
                 # Harder multi-file problems (saga, fencing token) get more thinking;
                 # simpler surface checks get less. -1 = model-controlled.
@@ -780,6 +800,7 @@ class DeepReasoningAgent:
                 config=types.GenerateContentConfig(
                     tools=_GROUNDING_TOOLS,
                     temperature=0.1,
+                    safety_settings=_SAFETY_SETTINGS,
                 ),
             )
             if not response.candidates or not response.candidates[0].content:
@@ -825,6 +846,7 @@ class DeepReasoningAgent:
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.1,
+                    safety_settings=_SAFETY_SETTINGS,
                     # No thinking needed for pure code generation — saves latency + cost
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 ),
@@ -1038,6 +1060,7 @@ class DeepReasoningAgent:
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     temperature=0.1,
+                    safety_settings=_SAFETY_SETTINGS,
                     thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 ),
             )

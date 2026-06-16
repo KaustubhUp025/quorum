@@ -27,11 +27,18 @@ docker build -t "${IMAGE}" .
 echo "==> Pushing to Container Registry"
 docker push "${IMAGE}"
 
-# NOTE: --set-env-vars REPLACES the entire env set on each deploy, so the full
-# runtime config must be listed here (omitting any var silently drops it from the
-# live service). QUORUM_USE_VERTEX_AI=true makes the agent authenticate to Gemini
-# via the Cloud Run service-account ADC instead of the depletable API key — this
-# requires the SA to hold roles/aiplatform.user, which ./deploy/setup_gcp.sh grants.
+# NOTE: the plain (non-secret) runtime env now lives in deploy/cloudrun.env.yaml — the
+# single source of truth. --env-vars-file REPLACES the entire plain-env set on each deploy,
+# so every var must be present in that file (omitting one silently drops it from the live
+# service). QUORUM_USE_VERTEX_AI=true makes the agent authenticate to Gemini via the Cloud
+# Run service-account ADC instead of the depletable API key — this requires the SA to hold
+# roles/aiplatform.user, which ./deploy/setup_gcp.sh grants.
+#
+# The yaml hardcodes QUORUM_GOOGLE_CLOUD_PROJECT / _LOCATION to the live values
+# (gen-lang-client-0294573094 / us-central1). If you deploy to a DIFFERENT project or
+# region via the args below, update cloudrun.env.yaml to match, or the agent will target
+# the wrong Vertex AI project.
+ENV_FILE="${SCRIPT_DIR}/cloudrun.env.yaml"
 echo "==> Deploying Cloud Run service (project=${PROJECT_ID}, region=${REGION})"
 gcloud run deploy "${SERVICE_NAME}" \
   --image "${IMAGE}" \
@@ -40,13 +47,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --project "${PROJECT_ID}" \
   --port 8080 \
   --allow-unauthenticated \
-  --set-env-vars "\
-QUORUM_CREATE_FIX_MRS=true,\
-QUORUM_CORRELATE_CI=true,\
-QUORUM_USE_VERTEX_AI=true,\
-QUORUM_GOOGLE_CLOUD_PROJECT=${PROJECT_ID},\
-QUORUM_GOOGLE_CLOUD_LOCATION=${REGION},\
-QUORUM_MCP_MODE=glab" \
+  --env-vars-file "${ENV_FILE}" \
   --set-secrets "\
 QUORUM_GITLAB_TOKEN=quorum-gitlab-token:latest,\
 QUORUM_GEMINI_API_KEY=quorum-gemini-key:latest,\

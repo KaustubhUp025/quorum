@@ -69,6 +69,16 @@ The `quorum serve` FastAPI server accepts GitLab webhooks. **`QUORUM_WEBHOOK_SEC
 - Background task error logs do not include stack traces (`exc_info` disabled) to prevent `Settings` locals from appearing in Cloud Run logs.
 - The `run_review` ADK tool return dict contains only review findings — no credential values are serialised into Playground responses.
 
+### Model safety settings
+
+Every Gemini call configures explicit Vertex AI / Gemini harm-category thresholds rather than relying on provider defaults. The thresholds are defined once in `quorum.agent._SAFETY_SETTINGS` and applied to all five `GenerateContentConfig` instances in the native review loop (investigation turn, forced summary turn, citation enrichment, and both fix-generation calls) as well as the ADK `root_agent`'s `generate_content_config` (`src/quorum/adk_app.py`).
+
+**Configuration:**
+- Categories covered: `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_DANGEROUS_CONTENT`.
+- Threshold: `BLOCK_ONLY_HIGH` for all four.
+
+**Rationale:** Quorum reviews source code, which legitimately includes security/exploit snippets, infrastructure config, and adversarial test fixtures. The default `DANGEROUS_CONTENT` filter treats such content as unsafe and returns empty candidates — which the review loop sees as a `safety_block_or_quota` warning and a zero-finding result. `BLOCK_ONLY_HIGH` still blocks genuinely harmful generation while preventing legitimate code review from being false-positived. The low generation temperature (0.1) further constrains output. If security-heavy diffs are still blocked, the documented fallback is `OFF`/`BLOCK_NONE` for `DANGEROUS_CONTENT` only.
+
 ## Disclosure policy
 
 We follow [Coordinated Vulnerability Disclosure](https://en.wikipedia.org/wiki/Coordinated_vulnerability_disclosure). Once a fix is merged and released, we will publish a GitHub Security Advisory.
