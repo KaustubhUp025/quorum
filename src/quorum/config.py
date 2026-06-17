@@ -61,9 +61,18 @@ class Settings(BaseSettings):
         default=None,
         description=(
             "MCP client tier: 'glab' (official CLI, recommended), "
-            "'zereight' (community npm), 'rest' (pure Python). "
+            "'zereight' (community npm), 'rest' (pure Python), "
+            "'semantic' (REST + quolab semantic search, needs search_service_url). "
             "Auto-detected when unset: 'glab' if glab is on PATH, else 'rest'."
         ),
+    )
+
+    # quolab semantic-search service (used when mcp_mode='semantic') — the OSS
+    # replacement for GitLab Ultimate AI code search. e.g. http://localhost:8080
+    search_service_url: str = Field(
+        default="",
+        description="Base URL of a quolab service for semantic_code_search (QUORUM_SEARCH_URL)",
+        validation_alias="QUORUM_SEARCH_URL",
     )
 
     # Community MCP server command (used when mcp_mode='zereight')

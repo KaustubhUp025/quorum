@@ -1232,7 +1232,57 @@ class GitLabRESTClient:
 
 
 # ---------------------------------------------------------------------------
-# Factory — three-tier client selection
+# quolab adapter — OSS replacement for GitLab Ultimate semantic search
+# ---------------------------------------------------------------------------
+
+class GitLabSemanticClient:
+    """Delegates the whole GitLab interface to ``GitLabRESTClient`` (free tier) but
+    routes ``semantic_code_search`` to a self-hosted **quolab** service — an
+    open-source stand-in for GitLab Ultimate's AI code search.
+
+    If quolab is unreachable it falls back to REST lexical search, mirroring the
+    glab→REST fallback (gitlab_client.py semantic path) so a review never crashes
+    when the search service is down.
+    """
+
+    def __init__(self, gitlab_url: str, token: str, search_url: str, ref: str = "HEAD") -> None:
+        self._rest = GitLabRESTClient(gitlab_url, token)
+        self._search_url = search_url.rstrip("/")
+        self._ref = ref
+
+    def __getattr__(self, name: str) -> Any:
+        # delegate every non-overridden attribute/method to the REST client
+        if name == "_rest":  # guard against recursion before __init__ completes
+            raise AttributeError(name)
+        return getattr(self._rest, name)
+
+    async def semantic_code_search(
+        self, project_id: str, query: str, max_results: int = 5
+    ) -> str:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{self._search_url}/search",
+                    json={
+                        "project_id": project_id,
+                        "query": query,
+                        "ref": self._ref,
+                        "max_results": max_results,
+                        "mode": "auto",
+                    },
+                )
+                resp.raise_for_status()
+                formatted = resp.json().get("formatted", "")
+            if formatted:
+                return formatted
+            log.warning("quolab_empty_result_falling_back")
+        except Exception as exc:
+            log.warning("quolab_search_failed_falling_back", error=str(exc)[:200])
+        return await self._rest.semantic_code_search(project_id, query, max_results)
+
+
+# ---------------------------------------------------------------------------
+# Factory — client selection
 # ---------------------------------------------------------------------------
 
 def _glab_available() -> bool:
@@ -1246,7 +1296,7 @@ def make_client(
     rest_only: bool = False,
     project_id: str | None = None,
     mcp_mode: str | None = None,
-) -> "GitLabGlabMCPClient | GitLabYodaMCPClient | GitLabRESTClient":
+) -> "GitLabGlabMCPClient | GitLabYodaMCPClient | GitLabRESTClient | GitLabSemanticClient":
     """
     Return the appropriate GitLab client for this environment.
 
@@ -1258,6 +1308,9 @@ def make_client(
                    107 tools, no semantic search, requires Node.js
       "rest"     → GitLabRESTClient     — pure Python, lexical search,
                    no external dependencies
+      "semantic" → GitLabSemanticClient — REST for everything, but semantic
+                   search routed to a self-hosted quolab service (OSS replacement
+                   for GitLab Ultimate AI search). Needs QUORUM_SEARCH_URL.
 
     Auto-detection when mcp_mode is None:
       glab installed → "glab"  (best)
@@ -1284,5 +1337,12 @@ def make_client(
         import shlex
         cmd = shlex.split(s.mcp_server_cmd)
         return GitLabYodaMCPClient(s.gitlab_url, s.gitlab_token, server_cmd=cmd)
+
+    if mode == "semantic":
+        url = getattr(s, "search_service_url", "") or ""
+        if not url:
+            log.warning("semantic_mode_no_search_url_falling_back_to_rest")
+            return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
+        return GitLabSemanticClient(s.gitlab_url, s.gitlab_token, url)
 
     return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
