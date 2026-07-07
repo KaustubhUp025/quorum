@@ -84,13 +84,22 @@ async def _run_review_async(
     from quorum.github_client import make_github_client
     from quorum.gitlab_client import make_client
 
-    settings = Settings(platform=platform, mcp_mode="rest")
+    # Default to REST-only in the Agent Engine sandbox (no glab subprocess). When a
+    # quolab service is configured (QUORUM_MCP_MODE=semantic + QUORUM_SEARCH_URL),
+    # route semantic_code_search there — the OSS GitLab Ultimate search replacement.
+    # The adapter wraps a REST inner client here (glab isn't on PATH in this sandbox)
+    # and falls back to REST lexical if quolab is unreachable, so this never regresses.
+    env_settings = Settings(platform=platform)
+    use_quolab = getattr(env_settings, "mcp_mode", None) == "semantic" and bool(
+        getattr(env_settings, "search_service_url", "")
+    )
+    settings = env_settings if use_quolab else Settings(platform=platform, mcp_mode="rest")
     agent = DeepReasoningAgent(settings)
 
     if platform == "github":
         client = make_github_client(settings)
     else:
-        client = make_client(settings, rest_only=True, project_id=project_id)
+        client = make_client(settings, rest_only=not use_quolab, project_id=project_id)
 
     async with client.connect():
         result = await agent.review(
