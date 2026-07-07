@@ -386,7 +386,7 @@ conditional check to every write while the lock is held.
 
 Quorum's differentiator is **GitLab's Model Context Protocol (MCP) server**, used in two complementary ways:
 
-**1. Inside the review pipeline.** When `glab` is on PATH, Stage 2's `semantic_code_search` / `get_merge_request_diffs` / `get_file_contents` calls are served by `glab mcp serve` — GitLab's official CLI MCP (191 tools), including **AI-semantic code search** across the whole repo (needs GitLab Duo/Ultimate). That cross-repo context is what lets Quorum *verify* a finding rather than guess from the diff. On Cloud Run this runs under `--execution-environment=gen2` (glab's Go TLS stack needs gen2's microVM kernel — it fails on the gen1 gVisor sandbox).
+**1. Inside the review pipeline.** When `glab` is on PATH, Stage 2's `semantic_code_search` / `get_merge_request_diffs` / `get_file_contents` calls are served by `glab mcp serve` — GitLab's official CLI MCP (191 tools). AI-semantic code search across the whole repo normally needs GitLab Duo/Ultimate; **since Quorum's Ultimate trial ended, that search is now served by the self-hosted OSS [quolab](https://github.com/KaustubhUp025/quolab) service instead** (set `QUORUM_MCP_MODE=semantic` — see the GitLab Ultimate-replacement note under *Platform support → GitLab client tiers* below). That cross-repo context is what lets Quorum *verify* a finding rather than guess from the diff. On Cloud Run this runs under `--execution-environment=gen2` (glab's Go TLS stack needs gen2's microVM kernel — it fails on the gen1 gVisor sandbox).
 
 **2. Live in the Agent Engine Playground (remote MCP).** GitLab's hosted MCP (`/api/v4/mcp`) is OAuth-DCR-only, so a headless agent can't use it with a PAT. Instead Quorum **self-hosts a GitLab MCP gateway on Cloud Run**, and the ADK agent connects to it with ADK's **`MCPToolset` over Streamable HTTP** — so the *interactive Playground* agent calls live GitLab MCP tools:
 
@@ -411,12 +411,26 @@ Quorum works on both GitLab and GitHub. **MCP is GitLab-specific** (the partner 
 
 | Tier | Client | Tools | Semantic search | Used by |
 |---|---|---|---|---|
-| **glab** (recommended) | `glab mcp serve` (official) | 191 | ✅ AI-semantic (needs Duo/Ultimate) | CLI, Cloud Run webhook (gen2) |
-| **remote gateway** | `MCPToolset` → Cloud Run gateway | 58 | REST search | Agent Engine Playground |
+| **semantic** (quolab) | glab/REST + self-hosted **quolab** | 191 + quolab | ✅ AI-semantic (**OSS, no Ultimate**) | **Cloud Run webhook + Agent Engine (current live)** |
+| **glab** | `glab mcp serve` (official) | 191 | ✅ AI-semantic (needs Duo/Ultimate) | CLI |
+| **remote gateway** | `MCPToolset` → Cloud Run gateway | 58 | REST search | Agent Engine Playground (MCP tools) |
 | **zereight** (community) | `@zereight/mcp-gitlab` | 107 | ❌ (REST lexical fallback) | gateway image / fallback |
 | **rest** (fallback) | GitLab REST API | — | ❌ (lexical) | dependency-free fallback |
 
-Auto-detection: `glab` on PATH → uses `glab`; otherwise → `rest`.  
+Auto-detection: `glab` on PATH → uses `glab`; otherwise → `rest`. Set `QUORUM_MCP_MODE=semantic` to route semantic search through quolab.
+
+> ### 🔀 Update — replacing GitLab Ultimate (2026-07)
+> Quorum's GitLab **Ultimate trial ended**, and its one load-bearing Ultimate dependency was
+> AI-semantic code search (`glab_search_semantic` / GitLab Duo). It's now served by
+> **[quolab](https://github.com/KaustubhUp025/quolab)** — a self-hosted **open-source** service
+> (git clone → tree-sitter cAST chunking → embeddings → hybrid BM25 + vector + RRF search) that
+> is a **drop-in replacement for GitLab Duo/Advanced code search with no Ultimate tier required**.
+>
+> Enable it with `QUORUM_MCP_MODE=semantic` + `QUORUM_SEARCH_URL` (the live Cloud Run and Agent
+> Engine deployments run this today). The `GitLabSemanticClient` adapter wraps the best available
+> base client (glab MCP when present — keeping full pipeline-gating tooling — else REST) and routes
+> **only** `semantic_code_search` to quolab, falling back to lexical search if quolab is unreachable.
+> quolab runs IAM-locked + API-key-gated; Quorum attaches a Cloud Run ID token + `X-API-Key` per call.  
 Override: `QUORUM_MCP_MODE=glab|zereight|rest`
 
 ### GitHub support (REST-only)
