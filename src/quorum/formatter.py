@@ -5,15 +5,63 @@ ReportFormatterAgent converts a ReviewResult into a structured Markdown MR comme
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING, Any
+
+import httpx
+import structlog
 
 from quorum.models import Finding, ReviewResult, Severity
 
 if TYPE_CHECKING:
     pass
 
+log = structlog.get_logger()
+
 _SEP = "\n\n---\n\n"
+
+
+async def post_gate_decision(
+    gate_url: str,
+    project_id: str,
+    sha: str,
+    result: ReviewResult,
+    api_key: str = "",
+) -> dict | None:
+    """Best-effort: POST this review's SARIF to a quolab ``/gate`` endpoint.
+
+    quolab's merge-gate is the OSS stand-in for GitLab Ultimate's MR Approval /
+    Scan-Result Policies + Security Dashboard: it turns the same SARIF Quorum already
+    emits into a free-tier commit status and records the decision for the dashboard.
+
+    Never raises — a gate outage must not fail a posted review. Returns the gate
+    decision dict, or None on any error.
+    """
+    from quorum.gitlab_client import quolab_auth_headers
+    from quorum.sarif import format_sarif
+
+    base = gate_url.rstrip("/")
+    try:
+        sarif = json.loads(format_sarif(result))
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{base}/gate",
+                json={"project_id": str(project_id), "sha": sha or "", "sarif": sarif},
+                headers=quolab_auth_headers(base, api_key),
+            )
+            resp.raise_for_status()
+            decision = resp.json()
+        log.info(
+            "gate_posted",
+            state=decision.get("state"),
+            blocking=decision.get("blocking"),
+            total=decision.get("total"),
+        )
+        return decision
+    except Exception as exc:
+        log.warning("gate_post_failed", error=str(exc)[:200])
+        return None
 
 _HEADING_RE = re.compile(r"^(#+\s)", re.MULTILINE)
 

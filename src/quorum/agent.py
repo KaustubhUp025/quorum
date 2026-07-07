@@ -1305,6 +1305,20 @@ class DeepReasoningAgent:
                 return result
             raise
 
+        # ── Merge-gate: feed SARIF to a quolab /gate (best-effort) ──
+        # OSS stand-in for GitLab Ultimate MR Approval / Scan-Result Policies +
+        # Security Dashboard. Off unless QUORUM_GATE_URL is set; never blocks.
+        if not parse_error and getattr(self._settings, "gate_service_url", ""):
+            from quorum.formatter import post_gate_decision
+
+            await post_gate_decision(
+                self._settings.gate_service_url,
+                project_id,
+                mr_meta.get("head_sha", ""),
+                result,
+                api_key=getattr(self._settings, "search_service_key", "") or "",
+            )
+
         # ── C3: MR Label Application ─────────────────────────────
         if self._settings.apply_labels:
             try:

@@ -75,6 +75,26 @@ class Settings(BaseSettings):
         validation_alias="QUORUM_SEARCH_URL",
     )
 
+    # Shared API key for the quolab service (app-layer gate; sent as X-API-Key on
+    # /search and /gate). Pairs with QUOLAB_API_KEY on the quolab side. On top of this,
+    # the adapter attaches a Google ID token when running on GCP so an IAM-locked quolab
+    # accepts the call. Used for both search and gate (same service).
+    search_service_key: str = Field(
+        default="",
+        description="Shared API key for the quolab service (QUORUM_SEARCH_KEY)",
+        validation_alias="QUORUM_SEARCH_KEY",
+    )
+
+    # quolab merge-gate service — OSS stand-in for GitLab Ultimate MR Approval /
+    # Scan-Result Policies + Security Dashboard. When set, a completed review POSTs
+    # its SARIF to {gate_service_url}/gate (best-effort) to emit a commit status and
+    # record the decision for the quolab dashboard. Empty = disabled.
+    gate_service_url: str = Field(
+        default="",
+        description="Base URL of a quolab service for the SARIF merge-gate (QUORUM_GATE_URL)",
+        validation_alias="QUORUM_GATE_URL",
+    )
+
     # Community MCP server command (used when mcp_mode='zereight')
     mcp_server_cmd: str = Field(
         default="npx --yes @zereight/mcp-gitlab",

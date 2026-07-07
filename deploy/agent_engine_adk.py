@@ -81,6 +81,9 @@ def deploy(project: str, region: str, update_resource: str | None = None) -> str
     print("==> Reading credentials from Secret Manager...")
     gitlab_token = _read_secret(project, "quorum-gitlab-token")
     github_token = _read_secret(project, "quorum-github-token")
+    # quolab API key — the OSS Ultimate-search replacement runs IAM-locked + key-gated.
+    search_key = _read_secret(project, "quolab-api-key")
+    search_url = os.getenv("QUORUM_SEARCH_URL", "https://quolab-3fnjzg6adq-uc.a.run.app")
     gateway_url = os.getenv(
         "QUORUM_MCP_GATEWAY_URL",
         "https://quorum-mcp-gateway-3fnjzg6adq-uc.a.run.app/mcp",
@@ -151,6 +154,13 @@ def deploy(project: str, region: str, update_resource: str | None = None) -> str
             # Tokens injected at deploy time from Secret Manager
             "QUORUM_GITLAB_TOKEN": gitlab_token,
             "QUORUM_GITHUB_TOKEN": github_token,
+            # Route semantic_code_search to the self-hosted quolab service (OSS
+            # replacement for GitLab Ultimate AI search). IAM-locked + key-gated;
+            # the adapter attaches this key + a Cloud Run ID token per call.
+            "QUORUM_MCP_MODE": "semantic",
+            "QUORUM_SEARCH_URL": search_url,
+            "QUORUM_GATE_URL": search_url,
+            "QUORUM_SEARCH_KEY": search_key,
         },
         # Keep one instance warm so the first query (e.g. a judge's) never hits a
         # cold start — a cold boot can surface a transient 400 FAILED_PRECONDITION

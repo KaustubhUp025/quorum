@@ -1235,26 +1235,82 @@ class GitLabRESTClient:
 # quolab adapter — OSS replacement for GitLab Ultimate semantic search
 # ---------------------------------------------------------------------------
 
-class GitLabSemanticClient:
-    """Delegates the whole GitLab interface to ``GitLabRESTClient`` (free tier) but
-    routes ``semantic_code_search`` to a self-hosted **quolab** service — an
-    open-source stand-in for GitLab Ultimate's AI code search.
+# Negative-cached so a non-GCP host (local dev) attempts minting at most once per
+# audience, and a GCP host reuses the token until shortly before it expires.
+_id_token_cache: dict[str, tuple[str, float]] = {}
 
-    If quolab is unreachable it falls back to REST lexical search, mirroring the
-    glab→REST fallback (gitlab_client.py semantic path) so a review never crashes
-    when the search service is down.
+
+def _fetch_id_token(audience: str) -> str:
+    """Best-effort Google-signed ID token for calling an IAM-protected Cloud Run
+    service (``audience`` = the service's base URL). Returns '' when unavailable
+    (e.g. local dev with user creds) — callers still send the API key, and failing
+    everything the review falls back to lexical search. Never raises.
+    """
+    import time as _time
+
+    now = _time.time()
+    tok, exp = _id_token_cache.get(audience, ("", 0.0))
+    if now < exp:
+        return tok
+    result = ""
+    try:
+        import google.auth.transport.requests
+        import google.oauth2.id_token
+
+        result = google.oauth2.id_token.fetch_id_token(
+            google.auth.transport.requests.Request(), audience
+        )
+    except Exception as exc:
+        log.debug("id_token_unavailable", error=str(exc)[:120])
+    # Cache success ~55 min; cache a miss ~5 min so we don't retry on every call.
+    _id_token_cache[audience] = (result, now + (3300 if result else 300))
+    return result
+
+
+def quolab_auth_headers(base_url: str, api_key: str) -> dict[str, str]:
+    """Auth headers for a quolab service that may be IAM-locked and/or API-key-gated:
+    the shared API key (``X-API-Key``) plus a best-effort Cloud Run ID token."""
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    token = _fetch_id_token(base_url)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+class GitLabSemanticClient:
+    """Wraps a base GitLab client (glab MCP when available, else REST) and overrides
+    only ``semantic_code_search`` to route through a self-hosted **quolab** service —
+    an open-source stand-in for GitLab Ultimate's AI code search.
+
+    Every other operation (diffs, comments, inline discussions, fix-MRs, pipeline
+    gating, …) is delegated to the inner base client, so wrapping the glab client
+    keeps full MCP capability while still gaining quolab semantic search. If quolab
+    is unreachable, semantic search falls back to REST lexical search, mirroring the
+    glab→REST fallback so a review never crashes when the search service is down.
     """
 
-    def __init__(self, gitlab_url: str, token: str, search_url: str, ref: str = "HEAD") -> None:
-        self._rest = GitLabRESTClient(gitlab_url, token)
+    def __init__(
+        self,
+        inner: object,
+        search_url: str,
+        rest_fallback: "GitLabRESTClient",
+        ref: str = "HEAD",
+        api_key: str = "",
+    ) -> None:
+        self._inner = inner              # glab or REST — handles everything but search
+        self._rest = rest_fallback       # REST client for the lexical fallback path
         self._search_url = search_url.rstrip("/")
         self._ref = ref
+        self._api_key = api_key
 
     def __getattr__(self, name: str) -> Any:
-        # delegate every non-overridden attribute/method to the REST client
-        if name == "_rest":  # guard against recursion before __init__ completes
+        # delegate every non-overridden attribute/method (incl. connect()) to the
+        # inner base client. Guard internal attrs against recursion pre-__init__.
+        if name in ("_inner", "_rest"):
             raise AttributeError(name)
-        return getattr(self._rest, name)
+        return getattr(self._inner, name)
 
     async def semantic_code_search(
         self, project_id: str, query: str, max_results: int = 5
@@ -1270,6 +1326,7 @@ class GitLabSemanticClient:
                         "max_results": max_results,
                         "mode": "auto",
                     },
+                    headers=quolab_auth_headers(self._search_url, self._api_key),
                 )
                 resp.raise_for_status()
                 formatted = resp.json().get("formatted", "")
@@ -1278,7 +1335,14 @@ class GitLabSemanticClient:
             log.warning("quolab_empty_result_falling_back")
         except Exception as exc:
             log.warning("quolab_search_failed_falling_back", error=str(exc)[:200])
-        return await self._rest.semantic_code_search(project_id, query, max_results)
+        # Fall back to REST lexical search. self._rest is the already-connected inner
+        # client when no glab is present, but a separate, unconnected client when we
+        # wrap glab — so open a session on demand in the latter case (else the REST
+        # client raises "Not connected").
+        if getattr(self._rest, "_http", None) is not None:
+            return await self._rest.semantic_code_search(project_id, query, max_results)
+        async with self._rest.connect():
+            return await self._rest.semantic_code_search(project_id, query, max_results)
 
 
 # ---------------------------------------------------------------------------
@@ -1308,9 +1372,10 @@ def make_client(
                    107 tools, no semantic search, requires Node.js
       "rest"     → GitLabRESTClient     — pure Python, lexical search,
                    no external dependencies
-      "semantic" → GitLabSemanticClient — REST for everything, but semantic
-                   search routed to a self-hosted quolab service (OSS replacement
-                   for GitLab Ultimate AI search). Needs QUORUM_SEARCH_URL.
+      "semantic" → GitLabSemanticClient — wraps the best available base client
+                   (glab MCP if installed, else REST) and routes only semantic
+                   search to a self-hosted quolab service (OSS replacement for
+                   GitLab Ultimate AI search). Needs QUORUM_SEARCH_URL.
 
     Auto-detection when mcp_mode is None:
       glab installed → "glab"  (best)
@@ -1343,6 +1408,17 @@ def make_client(
         if not url:
             log.warning("semantic_mode_no_search_url_falling_back_to_rest")
             return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
-        return GitLabSemanticClient(s.gitlab_url, s.gitlab_token, url)
+        # Inner base client keeps full GitLab capability: glab MCP (incl. pipeline
+        # gating) when available, else pure-REST. quolab overrides only search.
+        rest = GitLabRESTClient(s.gitlab_url, s.gitlab_token)
+        if _glab_available():
+            inner: object = GitLabGlabMCPClient(
+                s.gitlab_url, s.gitlab_token, project_id=project_id or ""
+            )
+        else:
+            inner = rest
+        return GitLabSemanticClient(
+            inner, url, rest, api_key=getattr(s, "search_service_key", "") or ""
+        )
 
     return GitLabRESTClient(s.gitlab_url, s.gitlab_token)
